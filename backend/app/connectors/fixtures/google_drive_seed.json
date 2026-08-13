@@ -1,0 +1,74 @@
+{
+  "files": [
+    {
+      "external_id": "mock-drive-001",
+      "name": "Q3 Product Roadmap.docx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "author": "jane.doe@acme-corp.com",
+      "body": "Q3 Product Roadmap\n\nThis document outlines the product roadmap for Q3, covering the Payment Service overhaul, the customer-facing dashboard redesign, and the mobile app beta.\n\nThe Payment Service overhaul is the top priority this quarter. Engineering will migrate the legacy payment gateway to the new PaymentService API, which supports multi-currency transactions and stronger fraud detection. The target completion date is September 15.\n\nThe dashboard redesign focuses on surfacing account health metrics more clearly for enterprise customers. Design has completed wireframes and is now working with engineering on the component library.\n\nThe mobile app beta will ship to 500 pilot users in early Q3, gathering feedback before the public launch planned for Q4. Success criteria include a crash-free rate above 99.5% and average session length above 3 minutes."
+    },
+    {
+      "external_id": "mock-drive-002",
+      "name": "Payment Service Architecture.pdf",
+      "mime_type": "application/pdf",
+      "author": "raj.patel@acme-corp.com",
+      "body": "Payment Service Architecture\n\nThe Payment Service is a standalone microservice responsible for processing all customer transactions. It exposes a REST API documented in the Payment API Swagger spec and communicates internally over gRPC with the Ledger Service and the Fraud Detection Service.\n\nThe service is deployed on Kubernetes across three regions for high availability. All transactions are written to an event log before being committed to the primary database, enabling replay for disaster recovery.\n\nAuthentication between internal services uses mutual TLS. External API calls require an OAuth2 bearer token issued by the Identity Service.\n\nKey dependencies: PostgreSQL for transactional data, Kafka for the event log, Redis for idempotency-key caching to prevent duplicate charges on retried requests."
+    },
+    {
+      "external_id": "mock-drive-003",
+      "name": "Payment API Swagger Spec.txt",
+      "mime_type": "text/plain",
+      "author": "raj.patel@acme-corp.com",
+      "body": "Payment API Swagger Spec (excerpt)\n\nPOST /v1/payments\nCreates a new payment. Requires idempotency-key header. Request body: amount, currency, customer_id, payment_method_id.\n\nGET /v1/payments/{id}\nRetrieves a payment by id, including its current status: pending, settled, failed, or refunded.\n\nPOST /v1/payments/{id}/refund\nIssues a full or partial refund for a settled payment.\n\nAll endpoints require an OAuth2 bearer token with the payments:write or payments:read scope as appropriate. Rate limit: 100 requests per minute per API key."
+    },
+    {
+      "external_id": "mock-drive-004",
+      "name": "Sprint 14 Meeting Notes",
+      "mime_type": "application/vnd.google-apps.document",
+      "author": "priya.nair@acme-corp.com",
+      "body": "Sprint 14 Meeting Notes\n\nAttendees: Jane, Raj, Priya, Marcus.\n\nDecision: the Payment Service migration will proceed in two phases. Phase one migrates read traffic only; phase two cuts over write traffic once phase one has run in production for two weeks without incident.\n\nAction items: Raj to finalize the rollback plan by Friday. Priya to update the deployment guide with the new phased rollout steps. Marcus to schedule a load test against the new PaymentService API before phase two begins.\n\nRisk flagged: the Fraud Detection Service has not yet been load-tested against the new payment volume. This is now the top open risk for the migration and needs an owner by next sprint."
+    },
+    {
+      "external_id": "mock-drive-005",
+      "name": "Deployment Guide.docx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "author": "marcus.lee@acme-corp.com",
+      "body": "Deployment Guide\n\nThis guide describes the standard deployment procedure for backend services.\n\nStep 1: merge to main triggers the CI pipeline, which runs the full test suite and builds a container image.\n\nStep 2: the image is automatically deployed to the staging environment. QA runs the smoke test suite against staging.\n\nStep 3: once staging is verified, an engineer manually promotes the release to production via the deployment dashboard. Production deploys require a second engineer's approval.\n\nStep 4: the on-call engineer monitors error rates and latency dashboards for 30 minutes after each production deploy before considering the rollout complete.\n\nRollback: if error rates exceed the alert threshold, the previous container image is redeployed automatically by the rollback pipeline."
+    },
+    {
+      "external_id": "mock-drive-006",
+      "name": "Testing SOP.pdf",
+      "mime_type": "application/pdf",
+      "author": "priya.nair@acme-corp.com",
+      "body": "Testing Standard Operating Procedure\n\nAll new features require unit tests covering the core logic and at least one integration test covering the primary user-facing flow.\n\nBefore merging, engineers must run the full regression suite locally and confirm no existing tests were broken.\n\nQA performs exploratory testing on staging before every production release, focusing on the areas changed in that release plus a rotating set of core flows to catch regressions.\n\nPerformance-sensitive changes (payments, search, authentication) additionally require a load test comparing latency and error rate against the previous release baseline."
+    },
+    {
+      "external_id": "mock-drive-007",
+      "name": "Employee Onboarding Handbook.docx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "author": "hr@acme-corp.com",
+      "body": "Employee Onboarding Handbook\n\nWelcome to Acme Corp. This handbook covers what to expect in your first two weeks.\n\nDay one: IT will provision your laptop and accounts. Your manager will walk you through your team's current projects and introduce you to your onboarding buddy.\n\nWeek one: complete the mandatory compliance training modules in the HR portal, including data security and code of conduct.\n\nWeek two: engineering new hires complete the internal architecture walkthrough, covering the Payment Service, the Identity Service, and how the monorepo is organized. Non-engineering new hires meet with each department lead.\n\nAll new hires should have their 30-day check-in scheduled with their manager by the end of week two."
+    },
+    {
+      "external_id": "mock-drive-008",
+      "name": "Fraud Detection Service Overview",
+      "mime_type": "application/vnd.google-apps.document",
+      "author": "raj.patel@acme-corp.com",
+      "body": "Fraud Detection Service Overview\n\nThe Fraud Detection Service scores every incoming payment request in real time before the Payment Service commits the transaction.\n\nIt uses a rules engine for known fraud patterns plus a machine learning model trained on historical transaction data. Requests scoring above the risk threshold are held for manual review; requests scoring extremely high are auto-declined.\n\nThe model is retrained monthly using the previous month's labeled transaction outcomes. Model performance is tracked via precision and recall on a held-out validation set, reviewed by the risk team at each retraining.\n\nCurrent open item: the service has not yet been load-tested against the payment volume expected after the Payment Service migration completes."
+    },
+    {
+      "external_id": "mock-drive-009",
+      "name": "Q2 Retrospective Notes.txt",
+      "mime_type": "text/plain",
+      "author": "marcus.lee@acme-corp.com",
+      "body": "Q2 Retrospective Notes\n\nWhat went well: the dashboard redesign shipped on schedule and received positive feedback from enterprise customers in early access.\n\nWhat didn't go well: the mobile app beta slipped two weeks due to underestimated App Store review turnaround. Future betas should submit for review at least three weeks before the target date.\n\nWhat we're changing: adding a dedicated release manager role for Q3 to coordinate cross-team dependencies, starting with the Payment Service migration."
+    },
+    {
+      "external_id": "mock-drive-010",
+      "name": "Identity Service API Reference.pdf",
+      "mime_type": "application/pdf",
+      "author": "jane.doe@acme-corp.com",
+      "body": "Identity Service API Reference\n\nThe Identity Service issues and validates OAuth2 tokens used by every internal service, including the Payment Service.\n\nPOST /v1/oauth/token exchanges client credentials for a bearer token scoped to the requested permissions.\n\nPOST /v1/oauth/introspect allows a service to validate a token it received and retrieve its scopes and expiry.\n\nTokens are short-lived, 15 minutes by default, and must be refreshed before expiry. The service is a hard dependency for all authenticated API traffic; its on-call rotation is considered tier-1."
+    }
+  ]
+}

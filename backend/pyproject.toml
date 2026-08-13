@@ -1,0 +1,22 @@
+[project]
+name = "knowledge-hub-backend"
+version = "0.1.0"
+description = "Enterprise Knowledge Hub AI - backend (Milestone 1 vertical slice)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["slow: loads a real ML model or hits a live service"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["app/db/migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]  # FastAPI's Depends(...) as a default arg is the standard DI pattern
+
+[tool.setuptools.packages.find]
+include = ["app*"]

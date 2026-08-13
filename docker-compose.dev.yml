@@ -1,0 +1,50 @@
+# Local-dev additions on top of docker-compose.yml's hardened prod default.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# docker-compose.yml intentionally ships no bind mounts, no --reload, no
+# published debug ports, and serves the frontend as a static Caddy build --
+# none of that is friendly for local iteration. This file adds it back
+# without touching the hardened base file.
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  qdrant:
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  ollama:
+    ports:
+      - "11434:11434"
+
+  backend:
+    ports:
+      - "8010:8000"
+    volumes:
+      - ./backend:/app
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+
+  celery_worker:
+    volumes:
+      - ./backend:/app
+
+  celery_beat:
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build:
+      target: dev
+    ports: !override
+      - "5173:5173"
+    environment:
+      VITE_BACKEND_PROXY_TARGET: http://backend:8000
+    volumes: !override
+      - ./frontend:/app
+      - /app/node_modules

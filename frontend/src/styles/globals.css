@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 222 20% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 20% 12%;
+  --muted: 210 20% 96%;
+  --muted-foreground: 215 15% 42%;
+  --border: 214 20% 89%;
+  --primary: 222 47% 24%;
+  --primary-foreground: 0 0% 100%;
+}
+
+.dark {
+  --background: 222 25% 8%;
+  --foreground: 210 20% 92%;
+  --card: 222 22% 11%;
+  --card-foreground: 210 20% 92%;
+  --muted: 222 18% 16%;
+  --muted-foreground: 215 12% 65%;
+  --border: 222 15% 20%;
+  --primary: 210 90% 66%;
+  --primary-foreground: 222 30% 10%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}

@@ -1,0 +1,21 @@
+# Serves the built SPA and reverse-proxies API calls to the backend
+# container. `tls internal` gives automatic, zero-credential self-signed TLS
+# for local/single-host deploys; once a real DOMAIN + public 80/443 are
+# available, drop that line (or leave it -- Caddy auto-upgrades to Let's
+# Encrypt for any non-localhost, non-internal-IP address) with no other
+# config change needed.
+{$DOMAIN:localhost} {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy {$BACKEND_UPSTREAM:backend:8000}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	tls internal
+}

@@ -1,0 +1,32 @@
+# ---- builder: compiles/installs dependencies into an isolated prefix ----
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ---- runtime: no build toolchain, non-root ----
+FROM python:3.11-slim AS runtime
+
+RUN groupadd --system app && useradd --system --gid app --no-create-home app
+
+WORKDIR /app
+
+COPY --from=builder /install /usr/local
+COPY . .
+
+# See backend/Dockerfile for why /data/raw is pre-created here.
+RUN mkdir -p /data/raw && chown -R app:app /app /data/raw
+
+ENV PYTHONUNBUFFERED=1
+
+USER app
+
+# No HEALTHCHECK: a Celery worker exposes no HTTP endpoint to probe.
+# Crash recovery is handled by docker-compose's `restart: unless-stopped`.
+CMD ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "sync,ingestion", "-l", "info", "--concurrency=2"]
