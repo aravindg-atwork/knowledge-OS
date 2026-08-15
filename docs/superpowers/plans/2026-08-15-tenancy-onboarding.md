@@ -1031,6 +1031,26 @@ def test_validate_workspace_name_allows_ordinary_punctuation(db):
     assert validate_workspace_name("O'Brien & Sons, Inc.") == "O'Brien & Sons, Inc."
 
 
+def test_validate_workspace_name_rejects_embedded_newline(db):
+    """The name reaches an email *subject* line; a newline there is header
+    injection. .strip() would not catch an interior one."""
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    with pytest.raises(ConflictError) as exc:
+        validate_workspace_name("Acme\nBcc: victim@example.com")
+    assert exc.value.code == "invalid_workspace_name"
+
+
+def test_validate_workspace_name_rejects_tab_and_null(db):
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    for bad in ("Acme\tCorp", "Acme\x00Corp", "Acme\rCorp"):
+        with pytest.raises(ConflictError):
+            validate_workspace_name(bad)
+
+
 def test_create_workspace_makes_owner_an_admin(db):
     owner = _user(db)
     workspace = TenancyService(db).create_workspace("Acme", owner)
@@ -1090,6 +1110,16 @@ def validate_workspace_name(name: str) -> str:
     if "<" in cleaned or ">" in cleaned:
         raise ConflictError(
             "Workspace name may not contain < or >", code="invalid_workspace_name"
+        )
+    # Control characters -- newlines especially -- must not survive. The
+    # workspace name is interpolated into the *subject* of invitation email,
+    # and a newline there is header injection (an attacker-added Bcc, say).
+    # .strip() only removes surrounding whitespace, so an interior "\n" would
+    # otherwise pass straight through to the mail transport.
+    if any(ch < " " or ch == "\x7f" for ch in cleaned):
+        raise ConflictError(
+            "Workspace name may not contain control characters",
+            code="invalid_workspace_name",
         )
     return cleaned
 
