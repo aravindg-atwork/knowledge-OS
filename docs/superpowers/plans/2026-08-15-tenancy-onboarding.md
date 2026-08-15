@@ -1623,7 +1623,9 @@ def _resolve_membership(
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise PermissionDeniedError("User is not active")
-    membership = WorkspaceRepository(db).get_membership(user_id, workspace_id)
+    # NOTE: signature is get_membership(workspace_id, user_id) -- both are
+    # UUIDs, so a swapped order fails silently by always returning None.
+    membership = WorkspaceRepository(db).get_membership(workspace_id, user_id)
     if membership is None:
         raise PermissionDeniedError("You are not a member of this workspace")
 
@@ -2132,7 +2134,7 @@ def switch_workspace(
     db: Session = Depends(get_db),
 ) -> LoginResponse:
     membership = WorkspaceRepository(db).get_membership(
-        current_user.user_id, payload.workspace_id
+        payload.workspace_id, current_user.user_id
     )
     if membership is None:
         raise PermissionDeniedError("You are not a member of that workspace")
@@ -2756,7 +2758,7 @@ class InvitationService:
         existing_user = WorkspaceRepository(self._db).get_user_by_email(email)
         if existing_user is not None:
             membership = WorkspaceRepository(self._db).get_membership(
-                existing_user.id, workspace_id
+                workspace_id, existing_user.id
             )
             if membership is not None:
                 raise ConflictError(
