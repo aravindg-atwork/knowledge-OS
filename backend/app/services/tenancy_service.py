@@ -2,6 +2,7 @@ import re
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError
@@ -11,6 +12,7 @@ from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _FALLBACK_SLUG = "workspace"
 _MAX_WORKSPACE_NAME = 100
+_MAX_SLUG_ATTEMPTS = 5
 
 
 def validate_workspace_name(name: str) -> str:
@@ -65,17 +67,49 @@ class TenancyService:
         )
 
     def create_workspace(self, name: str, owner: User) -> Workspace:
+        """Create a workspace with a unique slug and make ``owner`` an admin.
+
+        ``generate_slug``'s SELECT-then-decide check is not atomic with the
+        INSERT here: two concurrent signups for the same company name can
+        both see the same free slug and race to insert it. The DB's unique
+        constraint on ``Workspace.slug`` is the real guard; this loop just
+        makes sure the loser of that race gets a clean retry (and eventually
+        a clean AppError) instead of an unhandled IntegrityError bubbling up
+        as a 500. Each attempt runs inside a SAVEPOINT so a failed attempt
+        rolls back only its own insert -- not the surrounding transaction,
+        which may already hold other pending work (e.g. signup's User and
+        AuthToken inserts).
+        """
         name = validate_workspace_name(name)
-        workspace = Workspace(name=name, slug=self.generate_slug(name))
-        self._db.add(workspace)
-        self._db.flush()
-        self._db.add(
-            WorkspaceMembership(
-                workspace_id=workspace.id, user_id=owner.id, role=WorkspaceRole.admin
+        last_error: IntegrityError | None = None
+        for _ in range(_MAX_SLUG_ATTEMPTS):
+            slug = self.generate_slug(name)
+            savepoint = self._db.begin_nested()
+            workspace = Workspace(name=name, slug=slug)
+            self._db.add(workspace)
+            try:
+                self._db.flush()
+            except IntegrityError as exc:
+                savepoint.rollback()
+                last_error = exc
+                continue
+            savepoint.commit()
+
+            # Only insert the membership once the workspace insert has
+            # actually succeeded, so a retried attempt never leaves an
+            # orphaned admin membership behind.
+            self._db.add(
+                WorkspaceMembership(
+                    workspace_id=workspace.id, user_id=owner.id, role=WorkspaceRole.admin
+                )
             )
-        )
-        self._db.flush()
-        return workspace
+            self._db.flush()
+            return workspace
+
+        raise ConflictError(
+            "Could not allocate a unique workspace slug",
+            code="slug_allocation_failed",
+        ) from last_error
 
     def list_memberships(self, user_id: uuid.UUID) -> list[WorkspaceMembership]:
         return list(

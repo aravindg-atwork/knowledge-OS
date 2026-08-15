@@ -3,7 +3,7 @@ import uuid
 import pytest
 
 from app.models.user import User
-from app.models.workspace import WorkspaceRole
+from app.models.workspace import Workspace, WorkspaceRole
 from app.services.tenancy_service import TenancyService
 
 
@@ -100,3 +100,119 @@ def test_count_admins(db):
     workspace = TenancyService(db).create_workspace("Acme", owner)
     db.flush()
     assert TenancyService(db).count_admins(workspace.id) == 1
+
+
+def test_create_workspace_retries_past_slug_collision(db, monkeypatch):
+    """Simulates the race between generate_slug's SELECT and the later
+    INSERT: another actor has already taken the slug generate_slug would
+    otherwise hand out first. create_workspace must retry with a fresh slug
+    and succeed rather than raising an unhandled IntegrityError."""
+    owner = _user(db)
+
+    colliding = Workspace(name="Race Co", slug="race-co")
+    db.add(colliding)
+    db.flush()
+
+    service = TenancyService(db)
+    real_generate_slug = service.generate_slug
+    calls = {"n": 0}
+
+    def fake_generate_slug(name: str) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Force the first attempt onto the already-taken slug, as if
+            # generate_slug's own uniqueness check had raced and lost.
+            return "race-co"
+        return real_generate_slug(name)
+
+    monkeypatch.setattr(service, "generate_slug", fake_generate_slug)
+
+    workspace = service.create_workspace("Race Co", owner)
+    db.flush()
+
+    assert calls["n"] >= 2
+    assert workspace.slug != "race-co"
+    assert workspace.id is not None
+
+
+def test_create_workspace_retry_preserves_admin_membership(db, monkeypatch):
+    owner = _user(db)
+
+    colliding = Workspace(name="Race Co", slug="race-co")
+    db.add(colliding)
+    db.flush()
+
+    service = TenancyService(db)
+    real_generate_slug = service.generate_slug
+    calls = {"n": 0}
+
+    def fake_generate_slug(name: str) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "race-co"
+        return real_generate_slug(name)
+
+    monkeypatch.setattr(service, "generate_slug", fake_generate_slug)
+
+    workspace = service.create_workspace("Race Co", owner)
+    db.flush()
+
+    memberships = service.list_memberships(owner.id)
+    assert [m.workspace_id for m in memberships] == [workspace.id]
+    assert memberships[0].role == WorkspaceRole.admin
+
+
+def test_create_workspace_retry_does_not_poison_surrounding_transaction(db, monkeypatch):
+    """A failed slug-collision attempt must roll back only its own
+    SAVEPOINT, not the outer transaction -- create_workspace runs mid-request
+    alongside other pending inserts (e.g. signup's User + AuthToken) that
+    must survive a retry."""
+    owner = _user(db)
+
+    # Entity added to the session before the racy create_workspace call --
+    # this stands in for other work already pending in the same transaction.
+    bystander = User(email=f"bystander-{uuid.uuid4().hex[:8]}@t.local", hashed_password="x")
+    db.add(bystander)
+
+    colliding = Workspace(name="Race Co", slug="race-co")
+    db.add(colliding)
+    db.flush()
+
+    service = TenancyService(db)
+    real_generate_slug = service.generate_slug
+    calls = {"n": 0}
+
+    def fake_generate_slug(name: str) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "race-co"
+        return real_generate_slug(name)
+
+    monkeypatch.setattr(service, "generate_slug", fake_generate_slug)
+
+    service.create_workspace("Race Co", owner)
+
+    # The pre-existing pending entity must still be present and flushable --
+    # a plain (non-savepoint) rollback during the retry would have discarded it.
+    db.flush()
+    assert bystander.id is not None
+    assert db.get(User, bystander.id) is not None
+
+
+def test_create_workspace_raises_clean_error_when_slugs_exhausted(db, monkeypatch):
+    """If every attempt collides, create_workspace must raise a clean
+    ConflictError -- never let an IntegrityError escape as an unhandled 500."""
+    from app.core.errors import ConflictError
+
+    owner = _user(db)
+    service = TenancyService(db)
+
+    monkeypatch.setattr(service, "generate_slug", lambda name: "always-taken")
+
+    colliding = Workspace(name="Always Taken", slug="always-taken")
+    db.add(colliding)
+    db.flush()
+
+    with pytest.raises(ConflictError) as exc:
+        service.create_workspace("Always Taken", owner)
+    assert exc.value.code == "slug_allocation_failed"
