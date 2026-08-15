@@ -66,3 +66,17 @@ def test_invite_template_names_the_workspace_and_inviter():
     msg = invite_message("a@b.com", "Acme Corp", "boss@acme.com", "https://x/y")
     assert "Acme Corp" in msg.text
     assert "boss@acme.com" in msg.text
+
+
+def test_html_half_escapes_user_controlled_values():
+    """workspace_name is chosen at signup and lands in someone else's inbox."""
+    msg = invite_message(
+        "a@b.com",
+        '<img src=x onerror="alert(1)">',
+        "boss@acme.com",
+        "https://app.test/invite/accept?token=abc",
+    )
+    assert "<img src=x" not in msg.html
+    assert "&lt;img src=x" in msg.html
+    # The plain-text half is not escaped -- entities would render literally.
+    assert '<img src=x onerror="alert(1)">' in msg.text
