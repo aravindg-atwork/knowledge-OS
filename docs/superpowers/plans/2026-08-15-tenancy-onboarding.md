@@ -16,7 +16,8 @@
 - Role set stays exactly `admin` | `member`. Do **not** add roles — Qdrant payloads written at `workers/tasks_ingestion.py:63` carry these two values and any change forces a re-index.
 - Emailed tokens are stored **hashed (SHA-256)**, never plaintext. The raw token appears only in the email link.
 - Timestamps are timezone-aware UTC: `datetime.now(UTC)`, columns `DateTime(timezone=True)`.
-- Follow the existing error convention: raise `AppError` subclasses from `app/core/errors.py`. Do not raise bare `HTTPException` in new code.
+- Follow the existing error convention: raise `AppError` subclasses from `app/core/errors.py`. Do not raise bare `HTTPException` in new code. (Configuration errors raised at startup, outside any request, may use `ValueError` — they never become an HTTP response.)
+- **Workspace names are validated on input, everywhere they are set** — signup (Task 6), workspace creation (Task 9), and rename (Task 10). Defined once in `app/services/tenancy_service.py` as `validate_workspace_name(name: str) -> str`, which strips surrounding whitespace and raises `ConflictError(..., code="invalid_workspace_name")` unless the result is 1–100 characters and contains no `<` or `>`. This pairs with HTML escaping in the email templates: escaping is the real defense, and this stops the worst inputs at the door. Do not reimplement the rule per call site.
 - All new endpoints that mutate state call `log_audit_event(...)` from `app/core/audit.py`, matching the `auth.login.success` / `auth.login.failure` naming style.
 - `EMAIL_PROVIDER` defaults to `console`. `docker compose up` must keep working with **zero** email credentials.
 - Alembic revisions continue the existing linear chain. Current head is `0003`.
@@ -409,55 +410,86 @@ def get_email_provider() -> EmailProvider:
 `backend/app/email/templates.py`:
 
 ```python
+from html import escape
+
 from app.email.provider import EmailMessage
 
 _PRODUCT = "Enterprise Knowledge Hub"
 
+# Everything interpolated into the HTML half is escaped. `workspace_name` is
+# chosen by whoever signed up and lands in someone else's inbox, so it is
+# attacker-controlled in a self-serve product. `link` is server-built but is
+# escaped too -- an unescaped value inside an href attribute is a habit worth
+# not forming. Plain-text halves are never escaped: entities would render
+# literally there.
+
 
 def verify_email_message(to: str, link: str) -> EmailMessage:
+    safe_link = escape(link)
     text = (
         f"Welcome to {_PRODUCT}.\n\n"
         f"Confirm this address to activate your workspace:\n{link}\n\n"
         "This link expires in 7 days. If you didn't sign up, ignore this email."
     )
-    html = (
+    body = (
         f"<p>Welcome to {_PRODUCT}.</p>"
-        f'<p><a href="{link}">Confirm your email address</a></p>'
-        f"<p>Or paste this link: {link}</p>"
+        f'<p><a href="{safe_link}">Confirm your email address</a></p>'
+        f"<p>Or paste this link: {safe_link}</p>"
         "<p>This link expires in 7 days. If you didn't sign up, ignore this email.</p>"
     )
-    return EmailMessage(to=to, subject=f"Confirm your {_PRODUCT} email", text=text, html=html)
+    return EmailMessage(to=to, subject=f"Confirm your {_PRODUCT} email", text=text, html=body)
 
 
 def password_reset_message(to: str, link: str) -> EmailMessage:
+    safe_link = escape(link)
     text = (
         f"A password reset was requested for your {_PRODUCT} account.\n\n"
         f"Reset it here:\n{link}\n\n"
         "This link expires in 1 hour. If you didn't request it, ignore this email."
     )
-    html = (
+    body = (
         f"<p>A password reset was requested for your {_PRODUCT} account.</p>"
-        f'<p><a href="{link}">Reset your password</a></p>'
-        f"<p>Or paste this link: {link}</p>"
+        f'<p><a href="{safe_link}">Reset your password</a></p>'
+        f"<p>Or paste this link: {safe_link}</p>"
         "<p>This link expires in 1 hour. If you didn't request it, ignore this email.</p>"
     )
-    return EmailMessage(to=to, subject=f"Reset your {_PRODUCT} password", text=text, html=html)
+    return EmailMessage(to=to, subject=f"Reset your {_PRODUCT} password", text=text, html=body)
 
 
 def invite_message(to: str, workspace_name: str, inviter_email: str, link: str) -> EmailMessage:
+    safe_link = escape(link)
+    safe_workspace = escape(workspace_name)
+    safe_inviter = escape(inviter_email)
     text = (
         f"{inviter_email} invited you to the {workspace_name} workspace "
         f"on {_PRODUCT}.\n\nAccept the invitation:\n{link}\n\n"
         "This invitation expires in 7 days."
     )
-    html = (
-        f"<p>{inviter_email} invited you to the <strong>{workspace_name}</strong> "
+    body = (
+        f"<p>{safe_inviter} invited you to the <strong>{safe_workspace}</strong> "
         f"workspace on {_PRODUCT}.</p>"
-        f'<p><a href="{link}">Accept the invitation</a></p>'
-        f"<p>Or paste this link: {link}</p>"
+        f'<p><a href="{safe_link}">Accept the invitation</a></p>'
+        f"<p>Or paste this link: {safe_link}</p>"
         "<p>This invitation expires in 7 days.</p>"
     )
-    return EmailMessage(to=to, subject=f"Join {workspace_name} on {_PRODUCT}", text=text, html=html)
+    return EmailMessage(to=to, subject=f"Join {workspace_name} on {_PRODUCT}", text=text, html=body)
+```
+
+Add this test to `backend/tests/unit/test_email_provider.py`:
+
+```python
+def test_html_half_escapes_user_controlled_values():
+    """workspace_name is chosen at signup and lands in someone else's inbox."""
+    msg = invite_message(
+        "a@b.com",
+        '<img src=x onerror="alert(1)">',
+        "boss@acme.com",
+        "https://app.test/invite/accept?token=abc",
+    )
+    assert "<img src=x" not in msg.html
+    assert "&lt;img src=x" in msg.html
+    # The plain-text half is not escaped -- entities would render literally.
+    assert '<img src=x onerror="alert(1)">' in msg.text
 ```
 
 In `backend/app/core/config.py`, add to `Settings` beside the existing `AI_PROVIDER` block:
@@ -927,7 +959,7 @@ git commit -m "feat: add hashed single-use token service"
 
 **Interfaces:**
 - Consumes: `Workspace`, `WorkspaceMembership`, `WorkspaceRole`, `User`
-- Produces: `TenancyService(db)` with `generate_slug(name: str) -> str`, `create_workspace(name: str, owner: User) -> Workspace`, `list_memberships(user_id: UUID) -> list[WorkspaceMembership]`, `count_admins(workspace_id: UUID) -> int`
+- Produces: module-level `validate_workspace_name(name: str) -> str`; `TenancyService(db)` with `generate_slug(name: str) -> str`, `create_workspace(name: str, owner: User) -> Workspace`, `list_memberships(user_id: UUID) -> list[WorkspaceMembership]`, `count_admins(workspace_id: UUID) -> int`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -967,6 +999,38 @@ def test_blank_slug_falls_back(db):
     assert TenancyService(db).generate_slug("!!!").startswith("workspace")
 
 
+def test_validate_workspace_name_strips_and_returns(db):
+    from app.services.tenancy_service import validate_workspace_name
+
+    assert validate_workspace_name("  Acme Corp  ") == "Acme Corp"
+
+
+def test_validate_workspace_name_rejects_angle_brackets(db):
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    with pytest.raises(ConflictError) as exc:
+        validate_workspace_name('<img src=x onerror="alert(1)">')
+    assert exc.value.code == "invalid_workspace_name"
+
+
+def test_validate_workspace_name_rejects_empty_and_overlong(db):
+    import pytest as _pytest
+
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    for bad in ("", "   ", "x" * 101):
+        with _pytest.raises(ConflictError):
+            validate_workspace_name(bad)
+
+
+def test_validate_workspace_name_allows_ordinary_punctuation(db):
+    from app.services.tenancy_service import validate_workspace_name
+
+    assert validate_workspace_name("O'Brien & Sons, Inc.") == "O'Brien & Sons, Inc."
+
+
 def test_create_workspace_makes_owner_an_admin(db):
     owner = _user(db)
     workspace = TenancyService(db).create_workspace("Acme", owner)
@@ -998,11 +1062,36 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.errors import ConflictError
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _FALLBACK_SLUG = "workspace"
+_MAX_WORKSPACE_NAME = 100
+
+
+def validate_workspace_name(name: str) -> str:
+    """Single definition of what a workspace name may be, used by signup,
+    workspace creation, and rename.
+
+    Workspace names are set by whoever signs up and are rendered into
+    invitation emails that land in other people's inboxes. The templates
+    escape on output -- that is the real defense -- but rejecting angle
+    brackets at the door keeps the worst inputs out of the database in the
+    first place.
+    """
+    cleaned = name.strip()
+    if not 1 <= len(cleaned) <= _MAX_WORKSPACE_NAME:
+        raise ConflictError(
+            f"Workspace name must be 1-{_MAX_WORKSPACE_NAME} characters",
+            code="invalid_workspace_name",
+        )
+    if "<" in cleaned or ">" in cleaned:
+        raise ConflictError(
+            "Workspace name may not contain < or >", code="invalid_workspace_name"
+        )
+    return cleaned
 
 
 class TenancyService:
@@ -1024,6 +1113,7 @@ class TenancyService:
         )
 
     def create_workspace(self, name: str, owner: User) -> Workspace:
+        name = validate_workspace_name(name)
         workspace = Workspace(name=name, slug=self.generate_slug(name))
         self._db.add(workspace)
         self._db.flush()
@@ -2318,7 +2408,8 @@ def rename_workspace(
     db: Session = Depends(get_db),
 ) -> WorkspaceResponse:
     workspace = db.get(Workspace, current_user.workspace_id)
-    workspace.name = payload.name
+    # Same rule as signup -- a rename must not smuggle in what signup rejects.
+    workspace.name = validate_workspace_name(payload.name)
     db.commit()
     log_audit_event(
         "workspace.renamed",
