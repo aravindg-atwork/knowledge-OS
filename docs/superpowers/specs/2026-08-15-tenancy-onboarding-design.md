@@ -58,16 +58,26 @@ Explicitly out of scope, recorded so nothing is assumed lost:
 1a keeps the current single 24-hour access token. The membership re-check
 (below) is what makes that acceptable until 1b lands.
 
-## Precursor: fix the broken demo path
+## Retiring the demo path
 
-Migration `0003` added `user_id` to `connector_accounts`, and `_trigger_sync`
-(`api/v1/connectors.py:47`) filters on it. `seed_dev_data.py` was never updated
-to set it, so the seeded mock connector has `user_id = NULL`, which never
-matches. `POST /connectors/google-drive/sync` returns 404 and no document can
-be ingested through the demo path — the app is permanently empty out of the box.
+The seeded demo user is **not** being repaired. It is superseded by signup and
+is deleted as part of this sub-project.
 
-Fix: the seed sets `user_id` on the connector account it creates. This lands
-first so there is a working system with real documents to develop against.
+For the record, so nobody re-diagnoses it: migration `0003` added `user_id` to
+`connector_accounts` and `_trigger_sync` (`api/v1/connectors.py:47`) filters on
+it, but `seed_dev_data.py` was never updated to set it. The seeded mock
+connector therefore has `user_id = NULL`, which never matches, so
+`POST /connectors/google-drive/sync` returns 404 and no document can be
+ingested through the demo path. **This is known-broken and intentionally left
+that way.**
+
+Sequencing: `seed_dev_data.py` stays in the tree until signup works end to end,
+because it is currently the only way a user exists and deleting it early would
+leave no way to log in locally. It is deleted in the same change that lands
+signup — not before, not after.
+
+Mock connectors are unaffected and stay. They are what allows local development
+and CI to run without Google credentials.
 
 ## Architecture
 
@@ -89,7 +99,8 @@ to `console` in dev. **Local development requires no email account** — invite
 and reset links print to the backend logs, so `docker compose up` keeps working
 with zero external credentials.
 
-Production provider is Resend. The abstraction keeps that a one-file decision.
+Production provider is **Resend** (confirmed). The abstraction keeps that a
+one-file decision if it ever needs revisiting.
 
 ### New modules
 
