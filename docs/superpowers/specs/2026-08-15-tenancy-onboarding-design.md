@@ -323,6 +323,17 @@ tokens rather than mocking at the transport layer.
 - **Email deliverability** is a production concern the console provider hides
   during development. Domain verification and SPF/DKIM belong to sub-project 4,
   but should not be discovered late.
-- **Open self-serve signup invites abuse.** Rate limits and email verification
-  are the mitigation in 1a; if it proves insufficient, CAPTCHA is the next
-  lever and is not designed here.
+- **Open self-serve signup invites abuse. Accepted gap, decided 2026-08-15.**
+  Rate limits and email verification are the only mitigations in 1a. No CAPTCHA
+  or bot challenge is designed or built.
+
+  Consciously accepted rather than overlooked. The exposure: automated signups
+  can create junk workspaces and cause verification email to be sent to
+  addresses that did not request it, which damages sending-domain reputation —
+  the failure lands on deliverability, not on tenant isolation, so real
+  customer data is not at risk.
+
+  Revisit when any of these appear: signup volume that outpaces real
+  conversion, a rise in bounced or complained-about verification email, or a
+  Resend reputation warning. CAPTCHA (hCaptcha/Turnstile) at the signup
+  endpoint is the next lever and slots in without reshaping this design.
