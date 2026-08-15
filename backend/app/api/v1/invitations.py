@@ -108,11 +108,18 @@ def list_invitations(
 # would try (and fail) to parse the literal "preview" as a UUID, returning
 # 422 instead of ever reaching this handler.
 @router.get("/preview", response_model=InvitationPreviewResponse)
-def preview_invitation(token: str, db: Session = Depends(get_db)) -> InvitationPreviewResponse:
+@limiter.limit(get_settings().RATE_LIMIT_INVITE_PREVIEW)
+def preview_invitation(
+    request: Request, token: str, db: Session = Depends(get_db)
+) -> InvitationPreviewResponse:
     """Unauthenticated: the invitee has no account yet, so the accept page
     needs to name the workspace before any login is possible. Reveals only
     the workspace name and the address the invite was already sent to --
     never the inviter, member list, or anything else about the workspace.
+
+    Rate-limited (per client IP) because this endpoint is an unauthenticated
+    token-consuming oracle -- without a limit, invite tokens (32 random
+    bytes, but still) would be brute-forceable at unlimited rate from any IP.
     """
     service = InvitationService(db)
     invitation = service.find_valid(token)
@@ -122,7 +129,9 @@ def preview_invitation(token: str, db: Session = Depends(get_db)) -> InvitationP
 
 
 @router.post("/accept", response_model=AcceptInvitationResponse)
+@limiter.limit(get_settings().RATE_LIMIT_INVITE_PREVIEW)
 def accept_invitation(
+    request: Request,
     payload: AcceptInvitationRequest,
     db: Session = Depends(get_db),
     authorization: str | None = Header(default=None),
@@ -132,6 +141,17 @@ def accept_invitation(
     session *is* present it must belong to the invited address -- otherwise
     the membership would silently attach to whichever account is currently
     logged in, rather than the address the invite was sent to.
+
+    Rate-limited for the same reason as /preview: this is an unauthenticated
+    token-consuming endpoint.
+
+    A present-but-broken bearer token (malformed, expired, wrong signature)
+    is treated as a *hard* failure, not as "no session" -- it must not
+    silently fall through to the anonymous path. If it did, a caller could
+    bypass the mismatch check below just by sending garbage instead of a
+    valid session token. The try/except is scoped to the decode call only so
+    unrelated bugs later in this function are never mistaken for a bad
+    token.
     """
     service = InvitationService(db)
     invitation = service.find_valid(payload.token)
@@ -140,14 +160,16 @@ def accept_invitation(
         try:
             claims = decode_access_token(authorization.removeprefix("Bearer "))
         except Exception:
-            claims = None
-        if claims is not None:
-            session_user = db.get(User, uuid.UUID(claims["sub"]))
-            if session_user is not None and session_user.email != invitation.email:
-                raise PermissionDeniedError(
-                    "This invitation was sent to a different email address",
-                    code="invite_email_mismatch",
-                )
+            raise PermissionDeniedError(
+                "Invalid or expired session; sign out and open the invitation link again",
+                code="invalid_session",
+            )
+        session_user = db.get(User, uuid.UUID(claims["sub"]))
+        if session_user is not None and session_user.email != invitation.email:
+            raise PermissionDeniedError(
+                "This invitation was sent to a different email address",
+                code="invite_email_mismatch",
+            )
 
     user = WorkspaceRepository(db).get_user_by_email(invitation.email)
     if user is None:

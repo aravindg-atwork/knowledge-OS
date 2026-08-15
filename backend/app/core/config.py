@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:5173"
     RATE_LIMIT_SIGNUP: str = "5/hour"
     RATE_LIMIT_INVITE: str = "30/hour"
+    RATE_LIMIT_INVITE_PREVIEW: str = "20/minute"
     RATE_LIMIT_PASSWORD_RESET: str = "5/hour"
 
     # Connectors

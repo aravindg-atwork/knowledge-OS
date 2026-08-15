@@ -115,6 +115,26 @@ def test_logged_in_user_with_a_different_email_cannot_accept(client, fake_email)
     assert resp.json()["code"] == "invite_email_mismatch"
 
 
+def test_malformed_bearer_token_on_accept_is_rejected_not_ignored(client, fake_email):
+    """A present-but-undecodable session token must be a hard failure, not
+    silently treated as "no session" -- otherwise a caller could bypass the
+    email-mismatch guard just by sending garbage instead of a real token."""
+    token, _ = _verified_admin(client, fake_email)
+    invitee = f"broken-session-{uuid.uuid4().hex[:8]}@acme.com"
+    client.post(
+        "/api/v1/invitations",
+        json={"email": invitee, "role": "member"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    resp = client.post(
+        "/api/v1/invitations/accept",
+        json={"token": _invite_token(fake_email)},
+        headers={"Authorization": "Bearer not-a-real-jwt"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "invalid_session"
+
+
 def test_inviting_an_existing_member_conflicts(client, fake_email):
     token, admin_email = _verified_admin(client, fake_email)
     resp = client.post(
@@ -219,3 +239,24 @@ def test_concurrent_duplicate_invite_returns_409_not_500(db, monkeypatch):
     # The failed attempt's SAVEPOINT rollback must not have poisoned the
     # surrounding transaction -- the session must still be usable.
     db.flush()
+
+
+def test_preview_is_rate_limited(client, fake_email):
+    """/preview is unauthenticated and consumes a secret token, so without a
+    rate limit it would let any IP brute-force invite tokens at unlimited
+    rate. RATE_LIMIT_INVITE_PREVIEW is 20/minute (see core/config.py) --
+    exceed it within this single test and confirm the limiter is actually
+    wired up, not just configured."""
+    token, _ = _verified_admin(client, fake_email)
+    invitee = f"ratelimit-{uuid.uuid4().hex[:8]}@acme.com"
+    client.post(
+        "/api/v1/invitations",
+        json={"email": invitee, "role": "member"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    raw = _invite_token(fake_email)
+
+    statuses = [
+        client.get(f"/api/v1/invitations/preview?token={raw}").status_code for _ in range(21)
+    ]
+    assert 429 in statuses
