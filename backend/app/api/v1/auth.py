@@ -14,7 +14,7 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.db.session import get_db
 from app.email.factory import get_email_provider
 from app.email.provider import EmailProvider
-from app.email.templates import verify_email_message
+from app.email.templates import password_reset_message, verify_email_message
 from app.models.auth_token import AuthToken, AuthTokenPurpose
 from app.models.user import User
 from app.models.workspace import WorkspaceMembership
@@ -25,6 +25,7 @@ from app.services.token_service import generate_token, hash_token, is_expired
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _VERIFY_TTL = timedelta(days=7)
+_RESET_TTL = timedelta(hours=1)
 
 
 class LoginRequest(BaseModel):
@@ -54,6 +55,11 @@ class TokenOnlyRequest(BaseModel):
 
 class EmailOnlyRequest(BaseModel):
     email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -200,3 +206,60 @@ def resend_verification(
         db.commit()
     log_audit_event("auth.resend_verification.requested", email=payload.email)
     return SimpleStatusResponse(status="accepted")
+
+
+@router.post(
+    "/forgot-password",
+    response_model=SimpleStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit(get_settings().RATE_LIMIT_PASSWORD_RESET)
+def forgot_password(
+    request: Request,
+    payload: EmailOnlyRequest,
+    db: Session = Depends(get_db),
+    email_provider: EmailProvider = Depends(get_email_provider),
+) -> SimpleStatusResponse:
+    """Always 202 with an identical body, whether or not the address exists --
+    otherwise this endpoint becomes a customer-enumeration oracle."""
+    user = WorkspaceRepository(db).get_user_by_email(payload.email)
+    if user is not None:
+        raw = generate_token()
+        db.add(
+            AuthToken(
+                user_id=user.id,
+                purpose=AuthTokenPurpose.password_reset,
+                token_hash=hash_token(raw),
+                expires_at=datetime.now(UTC) + _RESET_TTL,
+            )
+        )
+        db.flush()
+        link = f"{get_settings().FRONTEND_BASE_URL}/reset-password?token={raw}"
+        email_provider.send(password_reset_message(user.email, link))
+        db.commit()
+        log_audit_event("auth.password_reset.requested", user_id=str(user.id))
+    return SimpleStatusResponse(status="accepted")
+
+
+@router.post("/reset-password", response_model=SimpleStatusResponse)
+def reset_password(
+    payload: ResetPasswordRequest, db: Session = Depends(get_db)
+) -> SimpleStatusResponse:
+    token = db.scalars(
+        select(AuthToken).where(
+            AuthToken.token_hash == hash_token(payload.token),
+            AuthToken.purpose == AuthTokenPurpose.password_reset,
+        )
+    ).first()
+    if token is None or token.used_at is not None:
+        raise InvalidTokenError()
+    if is_expired(token.expires_at):
+        raise TokenExpiredError()
+
+    user = db.get(User, token.user_id)
+    user.hashed_password = hash_password(payload.new_password)
+    token.used_at = datetime.now(UTC)
+    db.commit()
+
+    log_audit_event("auth.password_reset.completed", user_id=str(user.id))
+    return SimpleStatusResponse(status="reset")
