@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -6,9 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.deps import CurrentUser, get_current_user_allow_unverified
 from app.core.audit import log_audit_event
 from app.core.config import get_settings
-from app.core.errors import ConflictError, InvalidTokenError, TokenExpiredError
+from app.core.errors import ConflictError, InvalidTokenError, PermissionDeniedError, TokenExpiredError
 from app.core.rate_limit import limiter
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
@@ -17,7 +19,7 @@ from app.email.provider import EmailProvider
 from app.email.templates import password_reset_message, verify_email_message
 from app.models.auth_token import AuthToken, AuthTokenPurpose
 from app.models.user import User
-from app.models.workspace import WorkspaceMembership
+from app.models.workspace import Workspace, WorkspaceMembership
 from app.repositories.workspace_repository import WorkspaceRepository
 from app.services.tenancy_service import TenancyService
 from app.services.token_service import generate_token, hash_token, is_expired
@@ -263,3 +265,79 @@ def reset_password(
 
     log_audit_event("auth.password_reset.completed", user_id=str(user.id))
     return SimpleStatusResponse(status="reset")
+
+
+class WorkspaceSummary(BaseModel):
+    id: str
+    name: str
+    slug: str
+    role: str
+
+
+class MeResponse(BaseModel):
+    user_id: str
+    email: str
+    full_name: str | None
+    email_verified: bool
+    active_workspace_id: str
+    role: str
+    workspaces: list[WorkspaceSummary]
+
+
+class SwitchWorkspaceRequest(BaseModel):
+    workspace_id: uuid.UUID
+
+
+@router.get("/me", response_model=MeResponse)
+def me(
+    current_user: CurrentUser = Depends(get_current_user_allow_unverified),
+    db: Session = Depends(get_db),
+) -> MeResponse:
+    user = db.get(User, current_user.user_id)
+    memberships = TenancyService(db).list_memberships(user.id)
+    summaries = []
+    for membership in memberships:
+        workspace = db.get(Workspace, membership.workspace_id)
+        summaries.append(
+            WorkspaceSummary(
+                id=str(workspace.id),
+                name=workspace.name,
+                slug=workspace.slug,
+                role=membership.role.value,
+            )
+        )
+    return MeResponse(
+        user_id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        email_verified=user.email_verified_at is not None,
+        active_workspace_id=str(current_user.workspace_id),
+        role=current_user.role.value,
+        workspaces=summaries,
+    )
+
+
+@router.post("/switch-workspace", response_model=LoginResponse)
+def switch_workspace(
+    payload: SwitchWorkspaceRequest,
+    current_user: CurrentUser = Depends(get_current_user_allow_unverified),
+    db: Session = Depends(get_db),
+) -> LoginResponse:
+    # WorkspaceRepository.get_membership takes (workspace_id, user_id), not
+    # (user_id, workspace_id) -- verified against
+    # app/repositories/workspace_repository.py. Swapping the args wouldn't
+    # raise, it would just silently return None forever, so this order is
+    # load-bearing for the 403 below.
+    membership = WorkspaceRepository(db).get_membership(
+        payload.workspace_id, current_user.user_id
+    )
+    if membership is None:
+        raise PermissionDeniedError("You are not a member of that workspace")
+    log_audit_event(
+        "auth.workspace_switched",
+        user_id=str(current_user.user_id),
+        workspace_id=str(payload.workspace_id),
+    )
+    return LoginResponse(
+        access_token=create_access_token(current_user.user_id, payload.workspace_id)
+    )
