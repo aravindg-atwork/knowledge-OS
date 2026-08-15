@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,6 +11,7 @@ from app.db.base import Base, TimestampMixin, new_uuid, utcnow
 
 class ConnectorType(str, enum.Enum):
     google_drive = "google_drive"
+    gmail = "gmail"
 
 
 class ConnectorMode(str, enum.Enum):
@@ -25,11 +26,30 @@ class SyncRunStatus(str, enum.Enum):
 
 
 class ConnectorAccount(Base, TimestampMixin):
+    """One connected source-account. Multiple teammates in the same
+    workspace can each have their own row of the same connector_type (e.g.
+    Alice's Gmail and Bob's Gmail both connected) -- everything they connect
+    pools into the same workspace-scoped, role-gated document/chat corpus;
+    nothing about retrieval is keyed off which account ingested a document.
+
+    user_id is nullable to allow the one shared/workspace-level mock seed
+    account (no individual owner) to keep working unchanged; every "real"
+    (OAuth-connected) account always has user_id set to whoever connected it.
+    """
+
     __tablename__ = "connector_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "connector_type", "user_id", name="uq_connector_account_owner"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     connector_type: Mapped[ConnectorType] = mapped_column(
         Enum(ConnectorType, name="connector_type"), nullable=False

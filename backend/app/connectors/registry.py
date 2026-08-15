@@ -19,7 +19,20 @@ def get_connector(connector_type: ConnectorType, mode: ConnectorMode) -> Connect
     return _FACTORIES[key]()
 
 
+def _real_google_token_provider():
+    from app.connectors.google_oauth import GoogleOAuthTokenProvider
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    return GoogleOAuthTokenProvider(
+        settings.GOOGLE_OAUTH_CLIENT_ID, settings.GOOGLE_OAUTH_CLIENT_SECRET
+    )
+
+
 def _register_defaults() -> None:
+    from app.connectors.gmail.connector import GmailConnector
+    from app.connectors.gmail.mock_client import MockGmailClient
+    from app.connectors.gmail.real_client import RealGmailClient
     from app.connectors.google_drive.connector import GoogleDriveConnector
     from app.connectors.google_drive.mock_client import MockGoogleDriveClient
     from app.connectors.google_drive.real_client import RealGoogleDriveClient
@@ -32,7 +45,17 @@ def _register_defaults() -> None:
     register_connector(
         ConnectorType.google_drive,
         ConnectorMode.real,
-        lambda: GoogleDriveConnector(RealGoogleDriveClient()),
+        lambda: GoogleDriveConnector(RealGoogleDriveClient(), _real_google_token_provider()),
+    )
+    register_connector(
+        ConnectorType.gmail,
+        ConnectorMode.mock,
+        lambda: GmailConnector(MockGmailClient()),
+    )
+    register_connector(
+        ConnectorType.gmail,
+        ConnectorMode.real,
+        lambda: GmailConnector(RealGmailClient(), _real_google_token_provider()),
     )
 
 

@@ -63,6 +63,9 @@ class MockGoogleDriveClient:
             content=content, mime_type=entry["mime_type"], checksum=sha256_hex(content)
         )
 
+    def set_token(self, access_token: str) -> None:
+        pass  # no real auth backing the mock corpus
+
     # -- Dev-only simulation hooks -------------------------------------------
 
     def simulate_change(self, external_id: str, new_body: str | None = None) -> int:

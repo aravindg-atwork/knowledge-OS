@@ -1,0 +1,39 @@
+{
+  "messages": [
+    {
+      "external_id": "mock-gmail-001",
+      "subject": "Re: Payment Service migration -- phase two timeline",
+      "from": "raj.patel@acme-corp.com",
+      "to": "jane.doe@acme-corp.com",
+      "body": "Hi Jane,\n\nConfirming phase two (write traffic cutover) is targeted for September 15, contingent on phase one running incident-free for two weeks. The rollback plan is written up in the Deployment Guide.\n\nOne open risk: Fraud Detection hasn't been load-tested against the new volume yet. I've asked Priya to get that scheduled before phase two starts.\n\n-- Raj"
+    },
+    {
+      "external_id": "mock-gmail-002",
+      "subject": "Q3 roadmap review -- calendar invite attached",
+      "from": "jane.doe@acme-corp.com",
+      "to": "team@acme-corp.com",
+      "body": "Hi all,\n\nScheduling our Q3 roadmap review for next Tuesday at 10am. We'll cover the Payment Service overhaul, the dashboard redesign, and the mobile app beta status.\n\nPlease come with an update on your workstream's current blockers.\n\nThanks,\nJane"
+    },
+    {
+      "external_id": "mock-gmail-003",
+      "subject": "Fraud Detection load test results",
+      "from": "priya.nair@acme-corp.com",
+      "to": "raj.patel@acme-corp.com",
+      "body": "Ran the load test against 3x expected post-migration payment volume this morning.\n\nResults: p99 latency held under 200ms up to 2.5x volume, then degraded sharply past that. Recommend we add another inference replica before phase two cuts over write traffic.\n\nFull results doc to follow -- flagging early since this affects the phase two go/no-go decision."
+    },
+    {
+      "external_id": "mock-gmail-004",
+      "subject": "Your onboarding checklist -- week one",
+      "from": "hr@acme-corp.com",
+      "to": "new.hire@acme-corp.com",
+      "body": "Welcome to Acme Corp!\n\nThis week: complete the compliance training modules in the HR portal (data security + code of conduct), and get your 30-day check-in scheduled with your manager.\n\nWeek two you'll do the internal architecture walkthrough covering the Payment Service, the Identity Service, and how the monorepo is organized.\n\nReach out to your onboarding buddy any time -- no question is too small."
+    },
+    {
+      "external_id": "mock-gmail-005",
+      "subject": "Production incident 4021 -- postmortem scheduled",
+      "from": "marcus.lee@acme-corp.com",
+      "to": "team@acme-corp.com",
+      "body": "Postmortem for last night's elevated error rate (incident 4021) is scheduled for tomorrow 2pm.\n\nPreliminary timeline: error rates crossed the alert threshold at 11:47pm, the rollback pipeline auto-redeployed the previous image at 11:52pm, and rates returned to baseline by 11:58pm. No customer-facing payment failures during the window per the Ledger Service logs.\n\nRoot cause still under investigation -- will share findings before the postmortem."
+    }
+  ]
+}

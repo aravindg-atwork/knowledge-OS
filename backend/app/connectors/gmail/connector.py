@@ -2,20 +2,21 @@ from collections.abc import AsyncIterator
 from typing import ClassVar
 
 from app.connectors.base import Connector
+from app.connectors.gmail.client import GmailClient
 from app.connectors.google_drive.auth import MockOAuthTokenProvider, OAuthTokenProvider
-from app.connectors.google_drive.client import GoogleDriveClient
 from app.connectors.types import ChangeSet, ConnectorCredential, DownloadedFile, RemoteFile
 
 
-class GoogleDriveConnector(Connector):
+class GmailConnector(Connector):
     """Contains zero mock-vs-real branching -- it only talks to `self._client`,
-    whatever concrete implementation of GoogleDriveClient was injected."""
+    whatever concrete implementation of GmailClient was injected. Mirrors
+    GoogleDriveConnector's shape exactly."""
 
-    connector_type: ClassVar[str] = "google_drive"
+    connector_type: ClassVar[str] = "gmail"
 
     def __init__(
         self,
-        client: GoogleDriveClient,
+        client: GmailClient,
         token_provider: OAuthTokenProvider | None = None,
     ) -> None:
         self._client = client

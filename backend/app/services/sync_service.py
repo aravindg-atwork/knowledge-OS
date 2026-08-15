@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.connectors.base import Connector
 from app.connectors.registry import get_connector
-from app.connectors.types import ChangeSet
-from app.models.sync_state import SyncRunStatus
+from app.connectors.types import ChangeSet, ConnectorCredential
+from app.models.sync_state import ConnectorAccount, SyncRunStatus
 from app.repositories.sync_repository import SyncRepository
 
 
@@ -30,7 +30,7 @@ class SyncService:
         cursor = self._sync_repo.get_cursor(connector_account_id)
 
         try:
-            change_set = asyncio.run(self._fetch_changes(connector, cursor))
+            change_set = asyncio.run(self._fetch_changes(connector, account, cursor))
             self._sync_repo.set_cursor(connector_account_id, change_set.next_cursor)
             self._sync_repo.finish_run(
                 run,
@@ -45,7 +45,12 @@ class SyncService:
             raise
 
     @staticmethod
-    async def _fetch_changes(connector: Connector, cursor: str | None) -> ChangeSet:
+    async def _fetch_changes(
+        connector: Connector, account: ConnectorAccount, cursor: str | None
+    ) -> ChangeSet:
+        await connector.authenticate(
+            ConnectorCredential(connector_account_id=str(account.id), extra=account.credential_ref)
+        )
         if cursor is None:
             # First sync for this account: the seed corpus is a baseline,
             # not a "change" -- next_cursor="0" so the next detect_changes

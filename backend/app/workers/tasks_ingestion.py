@@ -4,6 +4,7 @@ import uuid
 
 from app.ai.factory import get_embedding_provider
 from app.connectors.registry import get_connector
+from app.connectors.types import ConnectorCredential
 from app.core.config import get_settings
 from app.core.errors import TransientConnectorError
 from app.db.session import SessionLocal
@@ -19,6 +20,17 @@ from app.workers.celery_app import celery_app
 from app.workers.task_utils import CONNECTOR_RETRY_KWARGS, remote_file_from_dict
 
 logger = logging.getLogger(__name__)
+
+
+async def _authenticate_and_download(connector, account, remote_file):
+    """Refreshes the connector's access token before downloading -- this task
+    runs independently of (and often well after) the sync task that
+    discovered `remote_file`, so any token obtained during that earlier sync
+    may already be stale."""
+    await connector.authenticate(
+        ConnectorCredential(connector_account_id=str(account.id), extra=account.credential_ref)
+    )
+    return await connector.download(remote_file)
 
 
 @celery_app.task(
@@ -40,7 +52,7 @@ def process_document_task(self, connector_account_id: str, remote_file_dict: dic
 
         connector = get_connector(account.connector_type, account.mode)
         try:
-            downloaded = asyncio.run(connector.download(remote_file))
+            downloaded = asyncio.run(_authenticate_and_download(connector, account, remote_file))
         except TransientConnectorError:
             raise
         except Exception as exc:  # network/IO failures from the connector -> retryable

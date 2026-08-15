@@ -40,14 +40,25 @@ class Settings(BaseSettings):
     RATE_LIMIT_REDIS_URL: str = "redis://localhost:6379/2"
 
     # AI provider
-    AI_PROVIDER: str = "local"  # local | openai | anthropic (future)
+    AI_PROVIDER: str = "local"  # local | mistral | openai | anthropic (future)
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
     EMBEDDING_DIM: int = 384
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     LLM_MODEL: str = "llama3.2:1b"
+    MISTRAL_API_KEY: str = ""
+    MISTRAL_MODEL: str = "mistral-small-latest"
 
     # Connectors
     GOOGLE_DRIVE_MODE: str = "mock"  # mock | real
+
+    # Google OAuth (shared by the Drive and Gmail connectors in "real" mode).
+    # Create these in Google Cloud Console -> APIs & Services -> Credentials
+    # (OAuth client ID, type "Web application") after enabling the Drive and
+    # Gmail APIs for the project. GOOGLE_OAUTH_REDIRECT_URI must be added
+    # there verbatim as an "Authorized redirect URI".
+    GOOGLE_OAUTH_CLIENT_ID: str = ""
+    GOOGLE_OAUTH_CLIENT_SECRET: str = ""
+    GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:8010/api/v1/connectors/google/oauth/callback"
 
     # Document storage
     RAW_STORAGE_DIR: str = "./data/raw"
