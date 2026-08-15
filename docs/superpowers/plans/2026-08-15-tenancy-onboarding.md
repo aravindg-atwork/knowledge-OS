@@ -44,7 +44,7 @@
 | `app/api/v1/invitations.py` | Invitation endpoints |
 | `app/models/auth_token.py` | `AuthToken` model + `AuthTokenPurpose` enum |
 | `app/models/invitation.py` | `Invitation` model |
-| `alembic/versions/0004_tenancy_onboarding.py` | Migration |
+| `app/db/migrations/versions/0004_tenancy_onboarding.py` | Migration |
 
 **Backend — modified:**
 
@@ -539,7 +539,7 @@ git commit -m "feat: add swappable email provider with console default"
 ### Task 3: Data model and migration 0004
 
 **Files:**
-- Create: `backend/app/models/auth_token.py`, `backend/app/models/invitation.py`, `backend/alembic/versions/0004_tenancy_onboarding.py`
+- Create: `backend/app/models/auth_token.py`, `backend/app/models/invitation.py`, `backend/app/db/migrations/versions/0004_tenancy_onboarding.py`
 - Modify: `backend/app/models/user.py`, `backend/app/models/__init__.py`
 - Test: `backend/tests/integration/test_tenancy_models.py`
 
@@ -653,7 +653,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, new_uuid
+from app.db.base import Base, TimestampMixin, new_uuid
 
 
 class AuthTokenPurpose(str, enum.Enum):
@@ -676,7 +676,7 @@ class AuthToken(Base, TimestampMixin):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 ```
 
-> Check `app/models/base.py` for the exact names of `Base`, `TimestampMixin`, and `new_uuid` before writing — mirror whatever `app/models/workspace.py` imports.
+> Check `app/db/base.py` for the exact names of `Base`, `TimestampMixin`, and `new_uuid` before writing — mirror whatever `app/models/workspace.py` imports.
 
 `backend/app/models/invitation.py`:
 
@@ -688,7 +688,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, new_uuid
+from app.db.base import Base, TimestampMixin, new_uuid
 from app.models.workspace import WorkspaceRole
 
 
@@ -722,7 +722,7 @@ In `backend/app/models/user.py` add:
 
 Import both new models in `backend/app/models/__init__.py` so Alembic autogenerate and `Base.metadata` see them.
 
-Migration `backend/alembic/versions/0004_tenancy_onboarding.py`:
+Migration `backend/app/db/migrations/versions/0004_tenancy_onboarding.py`:
 
 ```python
 """tenancy: auth tokens, invitations, user verification fields
@@ -841,7 +841,7 @@ Expected: both succeed. A migration that cannot roll back is a liability in prod
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/app/models backend/alembic/versions/0004_tenancy_onboarding.py backend/tests/integration/test_tenancy_models.py
+git add backend/app/models backend/app/db/migrations/versions/0004_tenancy_onboarding.py backend/tests/integration/test_tenancy_models.py
 git commit -m "feat: add auth_tokens and invitations tables with user verification fields"
 ```
 

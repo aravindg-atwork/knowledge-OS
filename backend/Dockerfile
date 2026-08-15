@@ -16,7 +16,8 @@ FROM python:3.11-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system app && useradd --system --gid app --no-create-home app
+    && groupadd --system app \
+    && useradd --system --gid app --create-home --home-dir /home/app app
 
 WORKDIR /app
 
@@ -29,6 +30,14 @@ COPY . .
 # mounted.
 RUN mkdir -p /data/raw && chown -R app:app /app /data/raw
 
+# sentence-transformers downloads EMBEDDING_MODEL on first use and caches it
+# under HF_HOME. Without a writable location the download fails outright and
+# every embedding -- and therefore all ingestion and retrieval -- breaks. Point
+# it at a directory the non-root `app` user owns; mount a volume here to avoid
+# re-downloading the model on every image rebuild.
+ENV HF_HOME=/home/app/.cache/huggingface
+RUN mkdir -p "$HF_HOME" && chown -R app:app /home/app
+
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
@@ -40,3 +49,14 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 # --workers defaults to 2; override via UVICORN_WORKERS. No --reload here --
 # that's a dev-only convenience, restored by docker-compose.dev.yml.
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"]
+
+# ---- dev: runtime plus the test/lint toolchain, used only via
+# docker-compose.dev.yml. The runtime image deliberately ships without pytest
+# and ruff -- production has no business carrying them -- but the dev stack
+# runs the suite inside this container, so they belong here rather than being
+# pip-installed into a running container on every test run.
+FROM runtime AS dev
+
+USER root
+RUN pip install --no-cache-dir -r requirements-dev.txt
+USER app
