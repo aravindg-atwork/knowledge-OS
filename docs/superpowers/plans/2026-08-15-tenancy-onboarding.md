@@ -474,7 +474,21 @@ In `backend/app/core/config.py`, add to `Settings` beside the existing `AI_PROVI
     RATE_LIMIT_PASSWORD_RESET: str = "5/hour"
 ```
 
-Add `httpx` to `backend/requirements.txt` if not already present (check first — the Google connector may already pull it in). Mirror the new settings into `.env.example` with the same defaults.
+Add to `backend/requirements.txt`:
+
+```
+email-validator==2.2.0
+```
+
+**This is required, not optional.** Tasks 6, 8, and 11 use `pydantic.EmailStr`, which raises at import time without it. Verified absent from the running container during pre-flight. `httpx==0.27.2` and `redis==5.0.8` are already present — do not re-add them.
+
+After editing requirements, rebuild so the container has the package:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build backend celery_worker celery_beat
+```
+
+Mirror the new settings into `.env.example` with the same defaults.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
