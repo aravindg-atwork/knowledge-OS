@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.errors import ConflictError
+from app.core.errors import ConflictError, NotFoundError
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 
@@ -127,3 +127,41 @@ class TenancyService:
                 WorkspaceMembership.role == WorkspaceRole.admin,
             )
         )
+
+    def change_role(
+        self, workspace_id: uuid.UUID, user_id: uuid.UUID, role: WorkspaceRole
+    ) -> WorkspaceMembership:
+        membership = self._get_membership_or_raise(workspace_id, user_id)
+        if (
+            membership.role is WorkspaceRole.admin
+            and role is WorkspaceRole.member
+            and self.count_admins(workspace_id) <= 1
+        ):
+            raise ConflictError(
+                "A workspace must keep at least one admin", code="last_admin"
+            )
+        membership.role = role
+        self._db.flush()
+        return membership
+
+    def remove_member(self, workspace_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        membership = self._get_membership_or_raise(workspace_id, user_id)
+        if membership.role is WorkspaceRole.admin and self.count_admins(workspace_id) <= 1:
+            raise ConflictError(
+                "A workspace must keep at least one admin", code="last_admin"
+            )
+        self._db.delete(membership)
+        self._db.flush()
+
+    def _get_membership_or_raise(
+        self, workspace_id: uuid.UUID, user_id: uuid.UUID
+    ) -> WorkspaceMembership:
+        membership = self._db.scalars(
+            select(WorkspaceMembership).where(
+                WorkspaceMembership.workspace_id == workspace_id,
+                WorkspaceMembership.user_id == user_id,
+            )
+        ).first()
+        if membership is None:
+            raise NotFoundError("That person is not a member of this workspace")
+        return membership
