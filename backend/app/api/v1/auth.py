@@ -1,17 +1,29 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit_event
 from app.core.config import get_settings
+from app.core.errors import ConflictError, InvalidTokenError, TokenExpiredError
 from app.core.rate_limit import limiter
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
+from app.email.factory import get_email_provider
+from app.email.provider import EmailProvider
+from app.email.templates import verify_email_message
+from app.models.auth_token import AuthToken, AuthTokenPurpose
+from app.models.user import User
 from app.models.workspace import WorkspaceMembership
 from app.repositories.workspace_repository import WorkspaceRepository
+from app.services.tenancy_service import TenancyService
+from app.services.token_service import generate_token, hash_token, is_expired
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_VERIFY_TTL = timedelta(days=7)
 
 
 class LoginRequest(BaseModel):
@@ -22,6 +34,25 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str | None = None
+    workspace_name: str
+
+
+class SimpleStatusResponse(BaseModel):
+    status: str
+
+
+class TokenOnlyRequest(BaseModel):
+    token: str
+
+
+class EmailOnlyRequest(BaseModel):
+    email: EmailStr
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -53,3 +84,103 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
         "auth.login.success", user_id=str(user.id), workspace_id=str(membership.workspace_id)
     )
     return LoginResponse(access_token=token)
+
+
+def _issue_verification_email(db: Session, user: User, email_provider: EmailProvider) -> None:
+    raw = generate_token()
+    db.add(
+        AuthToken(
+            user_id=user.id,
+            purpose=AuthTokenPurpose.verify_email,
+            token_hash=hash_token(raw),
+            expires_at=datetime.now(UTC) + _VERIFY_TTL,
+        )
+    )
+    db.flush()
+    link = f"{get_settings().FRONTEND_BASE_URL}/verify-email?token={raw}"
+    email_provider.send(verify_email_message(user.email, link))
+
+
+@router.post("/signup", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(get_settings().RATE_LIMIT_SIGNUP)
+def signup(
+    request: Request,
+    payload: SignupRequest,
+    db: Session = Depends(get_db),
+    email_provider: EmailProvider = Depends(get_email_provider),
+) -> LoginResponse:
+    """Create a new user and their first workspace, then send a verification
+    email. Issues an access token immediately -- the account is usable right
+    away, but permission-sensitive routes gate on email verification (see
+    Task 7's deps.py gate) rather than blocking signup on it.
+    """
+    repo = WorkspaceRepository(db)
+    if repo.get_user_by_email(payload.email) is not None:
+        log_audit_event("auth.signup.failure", email=payload.email, reason="email_taken")
+        raise ConflictError("An account with that email already exists", code="email_taken")
+
+    user = User(
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        full_name=payload.full_name,
+    )
+    db.add(user)
+    db.flush()
+
+    workspace = TenancyService(db).create_workspace(payload.workspace_name, user)
+    _issue_verification_email(db, user, email_provider)
+    db.commit()
+
+    log_audit_event(
+        "auth.signup.success", user_id=str(user.id), workspace_id=str(workspace.id)
+    )
+    return LoginResponse(access_token=create_access_token(user.id, workspace.id))
+
+
+@router.post("/verify-email", response_model=SimpleStatusResponse)
+def verify_email(payload: TokenOnlyRequest, db: Session = Depends(get_db)) -> SimpleStatusResponse:
+    token = db.scalars(
+        select(AuthToken).where(
+            AuthToken.token_hash == hash_token(payload.token),
+            AuthToken.purpose == AuthTokenPurpose.verify_email,
+        )
+    ).first()
+    if token is None or token.used_at is not None:
+        log_audit_event("auth.email_verify.failure", reason="invalid_token")
+        raise InvalidTokenError()
+    if is_expired(token.expires_at):
+        log_audit_event(
+            "auth.email_verify.failure", user_id=str(token.user_id), reason="token_expired"
+        )
+        raise TokenExpiredError()
+
+    user = db.get(User, token.user_id)
+    now = datetime.now(UTC)
+    user.email_verified_at = now
+    token.used_at = now
+    db.commit()
+
+    log_audit_event("auth.email_verify.success", user_id=str(user.id))
+    return SimpleStatusResponse(status="verified")
+
+
+@router.post(
+    "/resend-verification",
+    response_model=SimpleStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit(get_settings().RATE_LIMIT_SIGNUP)
+def resend_verification(
+    request: Request,
+    payload: EmailOnlyRequest,
+    db: Session = Depends(get_db),
+    email_provider: EmailProvider = Depends(get_email_provider),
+) -> SimpleStatusResponse:
+    """Always 202 regardless of whether the address exists -- this endpoint
+    must not reveal who has an account."""
+    user = WorkspaceRepository(db).get_user_by_email(payload.email)
+    if user is not None and user.email_verified_at is None:
+        _issue_verification_email(db, user, email_provider)
+        db.commit()
+    log_audit_event("auth.resend_verification.requested", email=payload.email)
+    return SimpleStatusResponse(status="accepted")
