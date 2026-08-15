@@ -967,6 +967,8 @@ git commit -m "feat: add hashed single-use token service"
 # backend/tests/integration/test_tenancy_service.py
 import uuid
 
+import pytest
+
 from app.models.user import User
 from app.models.workspace import WorkspaceRole
 from app.services.tenancy_service import TenancyService
@@ -1015,13 +1017,11 @@ def test_validate_workspace_name_rejects_angle_brackets(db):
 
 
 def test_validate_workspace_name_rejects_empty_and_overlong(db):
-    import pytest as _pytest
-
     from app.core.errors import ConflictError
     from app.services.tenancy_service import validate_workspace_name
 
     for bad in ("", "   ", "x" * 101):
-        with _pytest.raises(ConflictError):
+        with pytest.raises(ConflictError):
             validate_workspace_name(bad)
 
 
