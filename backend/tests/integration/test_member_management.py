@@ -70,6 +70,7 @@ def test_cannot_remove_the_last_admin(client, fake_email):
         f"/api/v1/workspaces/current/members/{me['user_id']}", headers=headers
     )
     assert resp.status_code == 409
+    assert resp.json()["code"] == "last_admin"
 
 
 def test_member_cannot_reach_admin_endpoints(client, fake_email, db):
@@ -94,6 +95,64 @@ def test_member_cannot_reach_admin_endpoints(client, fake_email, db):
     )
 
     resp = client.get("/api/v1/workspaces/current/members", headers=headers)
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "admin_required"
+
+
+def test_member_cannot_change_a_role(client, fake_email, db):
+    from sqlalchemy import select
+
+    from app.api.deps import invalidate_membership_cache
+    from app.models.workspace import WorkspaceMembership, WorkspaceRole
+
+    token, _ = _verified_admin(client, fake_email)
+    headers = {"Authorization": f"Bearer {token}"}
+    me = client.get("/api/v1/auth/me", headers=headers).json()
+
+    membership = db.scalars(
+        select(WorkspaceMembership).where(
+            WorkspaceMembership.user_id == uuid.UUID(me["user_id"])
+        )
+    ).first()
+    membership.role = WorkspaceRole.member
+    db.commit()
+    invalidate_membership_cache(
+        uuid.UUID(me["user_id"]), uuid.UUID(me["active_workspace_id"])
+    )
+
+    resp = client.patch(
+        f"/api/v1/workspaces/current/members/{me['user_id']}",
+        json={"role": "admin"},
+        headers=headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "admin_required"
+
+
+def test_member_cannot_remove_a_member(client, fake_email, db):
+    from sqlalchemy import select
+
+    from app.api.deps import invalidate_membership_cache
+    from app.models.workspace import WorkspaceMembership, WorkspaceRole
+
+    token, _ = _verified_admin(client, fake_email)
+    headers = {"Authorization": f"Bearer {token}"}
+    me = client.get("/api/v1/auth/me", headers=headers).json()
+
+    membership = db.scalars(
+        select(WorkspaceMembership).where(
+            WorkspaceMembership.user_id == uuid.UUID(me["user_id"])
+        )
+    ).first()
+    membership.role = WorkspaceRole.member
+    db.commit()
+    invalidate_membership_cache(
+        uuid.UUID(me["user_id"]), uuid.UUID(me["active_workspace_id"])
+    )
+
+    resp = client.delete(
+        f"/api/v1/workspaces/current/members/{me['user_id']}", headers=headers
+    )
     assert resp.status_code == 403
     assert resp.json()["code"] == "admin_required"
 
@@ -226,8 +285,14 @@ def test_role_change_revocation_is_immediate_not_ttl_delayed(client, fake_email,
 
 
 def test_admin_can_remove_a_member(client, fake_email, db):
+    """Also proves removal revocation is immediate, not TTL-delayed: the
+    removed member's cached membership entry (warmed by a real request
+    before removal) must stop granting access the instant they're removed,
+    with no sleep -- mirroring
+    test_role_change_revocation_is_immediate_not_ttl_delayed."""
     from sqlalchemy import select
 
+    from app.core.security import create_access_token
     from app.models.workspace import WorkspaceMembership, WorkspaceRole
 
     token, _ = _verified_admin(client, fake_email)
@@ -259,6 +324,17 @@ def test_admin_can_remove_a_member(client, fake_email, db):
     )
     db.commit()
 
+    # A fresh token scoped to the workspace they were just added to, so their
+    # cached-membership entry lives under this exact (user_id, workspace_id)
+    # cache key once warmed below.
+    other_workspace_token = create_access_token(other_user_id, workspace_id)
+    other_headers = {"Authorization": f"Bearer {other_workspace_token}"}
+
+    # Warm the membership cache with a successful request as the member,
+    # before they're removed.
+    warm_resp = client.get("/api/v1/documents", headers=other_headers)
+    assert warm_resp.status_code == 200
+
     resp = client.delete(
         f"/api/v1/workspaces/current/members/{other_user_id}", headers=headers
     )
@@ -271,6 +347,12 @@ def test_admin_can_remove_a_member(client, fake_email, db):
         )
     ).first()
     assert membership is None
+
+    # Immediately -- no sleep -- the removed member's previously-cached
+    # access must be gone. If invalidate_membership_cache were not called in
+    # remove_member, this would still return 200 for up to 60 seconds.
+    resp = client.get("/api/v1/documents", headers=other_headers)
+    assert resp.status_code == 403
 
 
 def test_rename_workspace(client, fake_email):

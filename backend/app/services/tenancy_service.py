@@ -132,26 +132,60 @@ class TenancyService:
         self, workspace_id: uuid.UUID, user_id: uuid.UUID, role: WorkspaceRole
     ) -> WorkspaceMembership:
         membership = self._get_membership_or_raise(workspace_id, user_id)
-        if (
-            membership.role is WorkspaceRole.admin
-            and role is WorkspaceRole.member
-            and self.count_admins(workspace_id) <= 1
-        ):
-            raise ConflictError(
-                "A workspace must keep at least one admin", code="last_admin"
-            )
+        if membership.role is WorkspaceRole.admin and role is WorkspaceRole.member:
+            # See _lock_admin_memberships: without this row lock, two
+            # concurrent demotions of two different admins can both read
+            # count == 2, both pass the guard, and both commit, leaving the
+            # workspace with zero admins -- an unrecoverable state via the
+            # API. Do not replace this with count_admins(); that's a plain
+            # (unlocked) SELECT and reintroduces the race.
+            if len(self._lock_admin_memberships(workspace_id)) <= 1:
+                raise ConflictError(
+                    "A workspace must keep at least one admin", code="last_admin"
+                )
         membership.role = role
         self._db.flush()
         return membership
 
     def remove_member(self, workspace_id: uuid.UUID, user_id: uuid.UUID) -> None:
         membership = self._get_membership_or_raise(workspace_id, user_id)
-        if membership.role is WorkspaceRole.admin and self.count_admins(workspace_id) <= 1:
-            raise ConflictError(
-                "A workspace must keep at least one admin", code="last_admin"
-            )
+        if membership.role is WorkspaceRole.admin:
+            # Same TOCTOU concern as change_role: lock the admin rows before
+            # counting so a concurrent remove/demote of another admin can't
+            # race this check and leave the workspace admin-less.
+            if len(self._lock_admin_memberships(workspace_id)) <= 1:
+                raise ConflictError(
+                    "A workspace must keep at least one admin", code="last_admin"
+                )
         self._db.delete(membership)
         self._db.flush()
+
+    def _lock_admin_memberships(self, workspace_id: uuid.UUID) -> list[WorkspaceMembership]:
+        """SELECT ... FOR UPDATE on the workspace's admin membership rows.
+
+        This makes the last-admin guard atomic with the mutation that
+        follows it: a second concurrent transaction trying to demote/remove
+        a *different* admin in the same workspace blocks here until the
+        first transaction commits (or rolls back), then re-reads the row
+        set and correctly observes the reduced admin count. Without this
+        lock, two concurrent demotions/removals of two different admins can
+        both read count() == 2, both pass the guard, and both commit --
+        leaving a workspace with zero admins, which nothing in the API can
+        ever repair (no admin left to invite, remove, or promote anyone).
+        Postgres rejects FOR UPDATE combined with an aggregate, so this
+        locks and materializes the rows and callers take len() themselves
+        rather than locking a count(*) query directly.
+        """
+        return list(
+            self._db.scalars(
+                select(WorkspaceMembership)
+                .where(
+                    WorkspaceMembership.workspace_id == workspace_id,
+                    WorkspaceMembership.role == WorkspaceRole.admin,
+                )
+                .with_for_update()
+            )
+        )
 
     def _get_membership_or_raise(
         self, workspace_id: uuid.UUID, user_id: uuid.UUID
