@@ -91,7 +91,6 @@ def test_concurrent_signup_email_collision_returns_409_not_500(client, fake_emai
     assert resp.json()["code"] == "email_taken"
 
 
-@pytest.mark.skip(reason="verified-email gate lands in Task 7 (app/api/deps.py)")
 def test_unverified_user_is_blocked_from_documents(client, fake_email):
     email = f"unv-{uuid.uuid4().hex[:8]}@acme.com"
     token = client.post("/api/v1/auth/signup", json=_signup_body(email)).json()["access_token"]
@@ -100,7 +99,6 @@ def test_unverified_user_is_blocked_from_documents(client, fake_email):
     assert resp.json()["code"] == "email_not_verified"
 
 
-@pytest.mark.skip(reason="verified-email gate lands in Task 7 (app/api/deps.py)")
 def test_verification_unblocks_documents(client, fake_email):
     email = f"ver-{uuid.uuid4().hex[:8]}@acme.com"
     token = client.post("/api/v1/auth/signup", json=_signup_body(email)).json()["access_token"]

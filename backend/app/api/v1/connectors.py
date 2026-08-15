@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import CurrentUser, get_current_user
+from app.api.deps import CurrentUser, get_current_user, require_admin
 from app.connectors import google_oauth
 from app.core.config import Settings, get_settings
 from app.core.errors import NotFoundError
@@ -78,7 +78,7 @@ class OAuthStartResponse(BaseModel):
 @router.get("/google/oauth/start", response_model=OAuthStartResponse)
 def start_google_oauth(
     connector_type: ConnectorType = Query(..., description="google_drive or gmail"),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_admin),
     settings: Settings = Depends(get_settings),
 ) -> OAuthStartResponse:
     """Called by the frontend (authenticated fetch) to get the Google consent
