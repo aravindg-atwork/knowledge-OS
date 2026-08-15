@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: str = ""
     MISTRAL_MODEL: str = "mistral-small-latest"
 
+    # Email -- console prints to logs so local dev needs no credentials.
+    EMAIL_PROVIDER: str = "console"  # console | resend
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM_ADDRESS: str = "no-reply@localhost"
+    # Base URL the emailed links point at (the frontend, not the API).
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    RATE_LIMIT_SIGNUP: str = "5/hour"
+    RATE_LIMIT_INVITE: str = "30/hour"
+    RATE_LIMIT_PASSWORD_RESET: str = "5/hour"
+
     # Connectors
     GOOGLE_DRIVE_MODE: str = "mock"  # mock | real
 
