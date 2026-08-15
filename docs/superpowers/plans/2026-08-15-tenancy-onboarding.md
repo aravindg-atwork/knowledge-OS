@@ -23,6 +23,9 @@
 - Alembic revisions continue the existing linear chain. Current head is `0003`.
 - Tests live in `backend/tests/unit/` and `backend/tests/integration/`, following existing file naming (`test_<behavior>.py`).
 - `seed_dev_data.py` stays in the tree until Task 17. It is currently the only way a user exists.
+- **Integration tests share one live Postgres database and do not roll back between tests.** Anything a test creates persists for the rest of the run and across runs. Therefore: give every workspace, email, and slug a unique suffix (`uuid.uuid4().hex[:8]`) rather than a literal like `"Acme Corp"`, or a later test will collide with an earlier one's rows. Never assume an empty table.
+- **Rate-limited endpoints need `limiter.reset()`** in an autouse fixture: limits are Redis-backed and keyed by client IP, and `TestClient` always presents the same IP, so tests otherwise trip the limiter and see 429 instead of the status under test.
+- **FastAPI dependency overrides must target `client.app`**, not the `app.main` module-level singleton — `tests/conftest.py` builds a fresh app per test via `create_app()`, so overriding the singleton silently misses the request.
 
 ---
 
@@ -1206,17 +1209,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _link_token(provider: FakeEmailProvider) -> str:
@@ -1751,17 +1767,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _signup(client, email: str) -> None:
@@ -1936,17 +1965,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _verified_signup(client, fake_email, workspace_name="Acme") -> tuple[str, str]:
@@ -2205,17 +2247,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _verified_admin(client, fake_email) -> tuple[str, str]:
@@ -2488,17 +2543,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _verified_admin(client, fake_email) -> tuple[str, str]:
@@ -3339,17 +3407,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def test_a_usable_account_can_be_created_without_the_seed(client, fake_email):
