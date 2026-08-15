@@ -6,6 +6,8 @@ import pytest
 from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
+from app.models.document import Document
+from app.models.sync_state import ConnectorAccount, ConnectorMode, ConnectorType
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +45,34 @@ def _verified_signup(client, fake_email, workspace_name="Acme") -> tuple[str, st
     raw = re.search(r"token=([A-Za-z0-9_\-]+)", fake_email.sent[-1].text).group(1)
     client.post("/api/v1/auth/verify-email", json={"token": raw})
     return token, email
+
+
+def _create_document(db, workspace_id: uuid.UUID) -> uuid.UUID:
+    """Mirrors the minimal ConnectorAccount+Document construction used by
+    tests/integration/conftest.py's workspace_factory -- a real Document row
+    needs a real ConnectorAccount FK, but this test only needs the document
+    to exist and be workspace-scoped, not to go through a full sync."""
+    suffix = uuid.uuid4().hex[:8]
+    connector_account = ConnectorAccount(
+        workspace_id=workspace_id,
+        connector_type=ConnectorType.google_drive,
+        mode=ConnectorMode.mock,
+        display_name="Google Drive (Mock)",
+    )
+    db.add(connector_account)
+    db.flush()
+
+    document = Document(
+        workspace_id=workspace_id,
+        connector_account_id=connector_account.id,
+        external_id=f"doc-{suffix}",
+        title=f"Doc {suffix}",
+        mime_type="text/plain",
+        source_url=f"https://example.com/{suffix}",
+    )
+    db.add(document)
+    db.commit()
+    return document.id
 
 
 def test_me_reports_identity_and_workspaces(client, fake_email):
@@ -92,10 +122,28 @@ def test_cannot_switch_into_a_workspace_you_do_not_belong_to(client, fake_email)
     assert resp.status_code == 403
 
 
-def test_switched_token_cannot_read_the_other_workspaces_documents(client, fake_email):
-    """The load-bearing isolation test: switching must not leak across tenants."""
+def test_switched_token_cannot_read_the_other_workspaces_documents(client, fake_email, db):
+    """The load-bearing isolation test: switching must not leak across tenants.
+
+    A prior version of this test only asserted the empty second workspace
+    returned `[]` from /documents -- vacuous, since that holds whether or not
+    scoping works at all. This version puts a real document in workspace A,
+    proves it is visible with a correctly-scoped token, then proves a token
+    switched to workspace B cannot see it, and finally proves switching back
+    makes it reappear (ruling out "the document was deleted" as an
+    explanation for the earlier absence).
+    """
     token, _ = _verified_signup(client, fake_email)
     headers = {"Authorization": f"Bearer {token}"}
+
+    workspace_a_id = client.get("/api/v1/auth/me", headers=headers).json()["active_workspace_id"]
+    document_id = str(_create_document(db, uuid.UUID(workspace_a_id)))
+
+    # Sanity: the document is genuinely visible when correctly scoped, so a
+    # later empty/absent result actually means something.
+    docs_a = client.get("/api/v1/documents", headers=headers).json()
+    assert {d["id"] for d in docs_a} == {document_id}
+
     second = client.post(
         "/api/v1/workspaces", json={"name": f"Second-{uuid.uuid4().hex[:8]}"}, headers=headers
     ).json()
@@ -103,7 +151,18 @@ def test_switched_token_cannot_read_the_other_workspaces_documents(client, fake_
         "/api/v1/auth/switch-workspace", json={"workspace_id": second["id"]}, headers=headers
     ).json()["access_token"]
 
-    docs = client.get(
+    docs_b = client.get(
         "/api/v1/documents", headers={"Authorization": f"Bearer {switched}"}
     ).json()
-    assert docs == []
+    assert document_id not in {d["id"] for d in docs_b}
+    assert docs_b == []
+
+    # Switch back: the document reappears, confirming it was never deleted --
+    # only out of scope for workspace B's token.
+    switched_back = client.post(
+        "/api/v1/auth/switch-workspace", json={"workspace_id": workspace_a_id}, headers=headers
+    ).json()["access_token"]
+    docs_a_again = client.get(
+        "/api/v1/documents", headers={"Authorization": f"Bearer {switched_back}"}
+    ).json()
+    assert {d["id"] for d in docs_a_again} == {document_id}
