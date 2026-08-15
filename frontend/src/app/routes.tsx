@@ -2,13 +2,8 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { LoginPage } from '@/features/auth/LoginPage'
 import { ChatPage } from '@/features/chat/ChatPage'
 import { DocumentListPage } from '@/features/documents/DocumentListPage'
-import { getStoredToken } from '@/lib/apiClient'
+import { RequireVerified } from './guards'
 import { AppShell } from './AppShell'
-
-function RequireAuth({ children }: { children: React.ReactNode }) {
-  if (!getStoredToken()) return <Navigate to="/login" replace />
-  return <>{children}</>
-}
 
 export function AppRoutes() {
   return (
@@ -17,9 +12,9 @@ export function AppRoutes() {
       <Route
         path="/"
         element={
-          <RequireAuth>
+          <RequireVerified>
             <AppShell />
-          </RequireAuth>
+          </RequireVerified>
         }
       >
         <Route index element={<Navigate to="/chat" replace />} />

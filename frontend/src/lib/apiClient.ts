@@ -15,10 +15,12 @@ export function clearStoredToken(): void {
 
 export class ApiError extends Error {
   status: number
+  code: string | null
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code: string | null = null) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -34,8 +36,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(response.status, body.detail ?? 'Request failed')
+    const body = await response
+      .json()
+      .catch(() => ({ detail: response.statusText, code: null }))
+    throw new ApiError(response.status, body.detail ?? 'Request failed', body.code ?? null)
   }
 
   if (response.status === 204) {

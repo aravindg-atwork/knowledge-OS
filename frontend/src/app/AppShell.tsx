@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Outlet, useNavigate, NavLink } from 'react-router-dom'
 import { MessageSquare, FileText, Moon, Sun, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { clearStoredToken } from '@/lib/apiClient'
+import { useAuth } from './AuthContext'
 
 function useDarkMode() {
   const [isDark, setIsDark] = useState(
@@ -19,9 +19,10 @@ function useDarkMode() {
 export function AppShell() {
   const { isDark, toggle } = useDarkMode()
   const navigate = useNavigate()
+  const { logout } = useAuth()
 
   function handleLogout() {
-    clearStoredToken()
+    logout()
     navigate('/login')
   }
 

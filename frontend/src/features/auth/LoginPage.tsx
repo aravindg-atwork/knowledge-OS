@@ -4,7 +4,7 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { ApiError } from '@/lib/apiClient'
-import { setStoredToken } from '@/lib/apiClient'
+import { useAuth } from '@/app/AuthContext'
 import { login } from './api/authApi'
 
 export function LoginPage() {
@@ -13,6 +13,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
+  const { login: setSession } = useAuth()
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -20,7 +21,7 @@ export function LoginPage() {
     setLoading(true)
     try {
       const { access_token } = await login(email, password)
-      setStoredToken(access_token)
+      await setSession(access_token)
       navigate('/chat')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Unable to sign in')
