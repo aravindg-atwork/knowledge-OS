@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit_event
@@ -119,13 +120,28 @@ def signup(
         log_audit_event("auth.signup.failure", email=payload.email, reason="email_taken")
         raise ConflictError("An account with that email already exists", code="email_taken")
 
+    # The pre-check above is not atomic with this insert: two concurrent
+    # signups for the same address can both pass it and race to insert.
+    # users.email carries a DB-level unique constraint, so the loser fails
+    # here instead -- caught via a SAVEPOINT (mirroring the discipline in
+    # TenancyService.create_workspace's slug race) so only this insert rolls
+    # back, not any unrelated work already pending on `db`. Unlike a slug
+    # collision, an email collision is terminal -- no retry, just the same
+    # clean 409 the non-racy pre-check path returns.
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
         full_name=payload.full_name,
     )
+    savepoint = db.begin_nested()
     db.add(user)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        savepoint.rollback()
+        log_audit_event("auth.signup.failure", email=payload.email, reason="email_taken")
+        raise ConflictError("An account with that email already exists", code="email_taken")
+    savepoint.commit()
 
     workspace = TenancyService(db).create_workspace(payload.workspace_name, user)
     _issue_verification_email(db, user, email_provider)

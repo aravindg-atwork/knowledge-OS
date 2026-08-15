@@ -70,6 +70,27 @@ def test_duplicate_signup_is_rejected(client, fake_email):
     assert resp.status_code == 409
 
 
+def test_concurrent_signup_email_collision_returns_409_not_500(client, fake_email, monkeypatch):
+    """get_user_by_email is a pre-check, not atomic with the User insert:
+    a racing request that reads before the winner's commit is visible would
+    sail past the pre-check and hit the DB's unique constraint on
+    users.email instead. Simulate that race by forcing the pre-check to miss
+    even though the row already exists, and assert the endpoint still
+    returns a clean 409 (via the SAVEPOINT + IntegrityError handling around
+    the insert) instead of an unhandled 500."""
+    email = f"race-{uuid.uuid4().hex[:8]}@acme.com"
+    first = client.post("/api/v1/auth/signup", json=_signup_body(email))
+    assert first.status_code == 201
+
+    from app.repositories.workspace_repository import WorkspaceRepository
+
+    monkeypatch.setattr(WorkspaceRepository, "get_user_by_email", lambda self, email: None)
+
+    resp = client.post("/api/v1/auth/signup", json=_signup_body(email))
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "email_taken"
+
+
 @pytest.mark.skip(reason="verified-email gate lands in Task 7 (app/api/deps.py)")
 def test_unverified_user_is_blocked_from_documents(client, fake_email):
     email = f"unv-{uuid.uuid4().hex[:8]}@acme.com"
