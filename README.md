@@ -24,6 +24,22 @@ back bind mounts, `--reload`, and published debug ports for local iteration.)
 - Qdrant dashboard: http://localhost:6333/dashboard
 - Ollama: http://localhost:11434
 
+## Getting an account
+
+There's no seed data and no demo login -- create your own account:
+
+1. Go to http://localhost:5173/signup and sign up (this also creates your workspace).
+2. Verification emails aren't sent anywhere real in local dev; the console
+   email provider just prints the message, so grab the verification link from
+   the backend logs:
+   ```
+   docker compose logs backend | grep -A2 verify-email
+   ```
+3. Open that link (or paste the `token` query param into the verify-email
+   flow in the UI) to verify, then log in and start chatting.
+
+This needs no email credentials and no manual database access.
+
 ## Backend tests
 
 ```
@@ -111,30 +127,3 @@ Real-mode syncs pull read-only: Drive files (Docs/Sheets/Slides are
 exported to text/CSV; other files downloaded as-is) and Gmail messages
 (subject/from/date + plain-text body, `-in:chats -in:spam -in:trash`).
 Attachments are not ingested yet.
-
-
-Found something worth flagging: while verifying item 10 against a real service stack, the full test suite failed intermittently (~1 in 3 runs) with a Qdrant 409 Conflict on create_collection — a pre-existing TOCTOU race in ensure_collection's check-then-create pattern, unrelated to anything in my plan. It's not something I was asked to fix, but it directly undermines the CI job I'm building (a flaky test makes the pass/fail signal worthless). Let me show you the exact code and the fix before touching it.
-
-  Read 1 file
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ☐ Qdrant race fix
-
-This is outside the approved 11-item plan (it's app/pipeline code, not infra hardening). Want me to fix the race now since it'll make the new CI flaky, or just note it and leave it alone?
-
-❯ 1. Fix it now (Recommended)
-     Small, contained fix in ensure_collection() -- catch the 409/"already exists" response and treat it as success instead of raising. Makes the CI job in item 10 actually reliable.
-  2. Just note it, don't touch app code
-     Leave qdrant_store.py untouched. I'll document the flake risk in the CI workflow/plan and move on -- you can address it separately later.
-  3. Type something.
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  4. Chat about this
-
-Enter to select · ↑/↓ to navigate · Esc to cancel
-
-  11 tasks (9 done, 1 in progress, 1 open)
-  ◼ 10. CI pipeline
-  ◻ 11. Close load-bearing test gaps
-  ✔ 1. Secrets/config hardening
-  ✔ 2. Structured logging + request correlation IDs
-  ✔ 3. Global exception handler + security headers
-   … +6 completed

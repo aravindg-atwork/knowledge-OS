@@ -17,11 +17,18 @@ from app.core.config import Settings, get_settings
 
 @lru_cache
 def _build_embedding_provider(ai_provider: str, embedding_model: str) -> EmbeddingProvider:
-    if ai_provider == "local":
-        return LocalSentenceTransformerEmbeddings(model_name=embedding_model)
-    # future: elif ai_provider == "openai": return OpenAIEmbeddings(...)
-    # future: elif ai_provider == "anthropic": return VoyageEmbeddings(...)
-    raise NotImplementedError(f"AI_PROVIDER={ai_provider!r} not yet implemented for embeddings")
+    """Embeddings are always local, whatever AI_PROVIDER selects.
+
+    AI_PROVIDER chooses the chat/LLM backend only -- the README is explicit
+    that "embeddings stay local either way". Gating this on
+    ai_provider == "local" meant the documented AI_PROVIDER=mistral setup
+    raised NotImplementedError on every embedding call, which silently broke
+    all ingestion and retrieval.
+
+    A future cloud embedding backend should be selected by its own setting
+    (e.g. EMBEDDING_PROVIDER), not by the LLM's.
+    """
+    return LocalSentenceTransformerEmbeddings(model_name=embedding_model)
 
 
 @lru_cache

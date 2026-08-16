@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.orm import Session
@@ -36,7 +37,17 @@ def make_workspace(db: Session, name: str) -> tuple[Workspace, User, ConnectorAc
     db.add(workspace)
     db.flush()
 
-    user = User(email=f"user-{suffix}@test.local", hashed_password="not-used")
+    # email_verified_at is set here (not left null) because this fixture
+    # represents an ordinary, already-onboarded workspace member -- tests
+    # using it exercise workspace scoping / sync / retrieval, not the
+    # verified-email gate (see app/api/deps.py, Task 7), which has its own
+    # dedicated coverage in test_signup_flow.py and
+    # test_membership_enforcement.py.
+    user = User(
+        email=f"user-{suffix}@test.local",
+        hashed_password="not-used",
+        email_verified_at=datetime.now(UTC),
+    )
     db.add(user)
     db.flush()
 

@@ -9,11 +9,14 @@ logger = logging.getLogger(__name__)
 class AppError(Exception):
     status_code = 500
     message = "Internal server error"
+    code: str | None = None
 
-    def __init__(self, message: str | None = None):
+    def __init__(self, message: str | None = None, code: str | None = None):
         super().__init__(message or self.message)
         if message:
             self.message = message
+        if code is not None:
+            self.code = code
 
 
 class NotFoundError(AppError):
@@ -38,10 +41,37 @@ class TransientConnectorError(AppError):
     message = "Connector temporarily unavailable"
 
 
+class EmailNotVerifiedError(AppError):
+    status_code = 403
+    code = "email_not_verified"
+
+    def __init__(self, message: str = "Email address not verified", code: str | None = None) -> None:
+        super().__init__(message, code)
+
+
+class InvalidTokenError(AppError):
+    status_code = 400
+    code = "invalid_token"
+
+    def __init__(self, message: str = "Invalid token", code: str | None = None) -> None:
+        super().__init__(message, code)
+
+
+class TokenExpiredError(AppError):
+    status_code = 400
+    code = "token_expired"
+
+    def __init__(self, message: str = "Token has expired", code: str | None = None) -> None:
+        super().__init__(message, code)
+
+
 def register_exception_handlers(app: FastAPI, *, environment: str = "dev") -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.message, "code": exc.code},
+        )
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:

@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { ApiError } from '@/lib/apiClient'
-import { setStoredToken } from '@/lib/apiClient'
+import { useAuth } from '@/app/AuthContext'
 import { login } from './api/authApi'
 
 export function LoginPage() {
@@ -13,6 +13,9 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
+  const location = useLocation()
+  const { login: setSession } = useAuth()
+  const passwordReset = Boolean((location.state as { passwordReset?: boolean } | null)?.passwordReset)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -20,7 +23,7 @@ export function LoginPage() {
     setLoading(true)
     try {
       const { access_token } = await login(email, password)
-      setStoredToken(access_token)
+      await setSession(access_token)
       navigate('/chat')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Unable to sign in')
@@ -34,6 +37,11 @@ export function LoginPage() {
       <Card className="w-full max-w-sm p-6">
         <h1 className="mb-1 text-lg font-semibold">Enterprise Knowledge Hub</h1>
         <p className="mb-6 text-sm text-muted-foreground">Sign in to search company knowledge.</p>
+        {passwordReset && (
+          <p className="mb-3 text-sm text-emerald-600">
+            Your password has been reset. Sign in with your new password.
+          </p>
+        )}
         <form onSubmit={handleSubmit} className="space-y-3">
           <Input
             type="email"
@@ -54,6 +62,14 @@ export function LoginPage() {
             {loading ? 'Signing in...' : 'Sign in'}
           </Button>
         </form>
+        <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+          <Link to="/signup" className="underline">
+            Create an account
+          </Link>
+          <Link to="/forgot-password" className="underline">
+            Forgot your password?
+          </Link>
+        </div>
       </Card>
     </div>
   )

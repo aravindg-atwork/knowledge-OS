@@ -13,7 +13,14 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "dev"
     JWT_SECRET: str = _DEV_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 60 * 24
+    # 2 hours, not 24. Access tokens are stateless and nothing revokes them:
+    # a password reset does NOT end an attacker's existing session, and that
+    # session also retains /auth/switch-workspace across every workspace the
+    # account belongs to. Session revocation is deferred to sub-project 1b
+    # (see docs/superpowers/specs/2026-08-16-tenancy-followups.md); until it
+    # lands, this expiry IS the revocation window. Raise it again only once
+    # real session invalidation exists.
+    JWT_EXPIRE_MINUTES: int = 120
     # Only send Strict-Transport-Security when the deploy is actually behind
     # TLS (see docker-compose's Caddy edge) -- sending it over plain HTTP
     # would tell browsers to force HTTPS for a host that may not serve it.
@@ -47,6 +54,17 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "llama3.2:1b"
     MISTRAL_API_KEY: str = ""
     MISTRAL_MODEL: str = "mistral-small-latest"
+
+    # Email -- console prints to logs so local dev needs no credentials.
+    EMAIL_PROVIDER: str = "console"  # console | resend
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM_ADDRESS: str = "no-reply@localhost"
+    # Base URL the emailed links point at (the frontend, not the API).
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    RATE_LIMIT_SIGNUP: str = "5/hour"
+    RATE_LIMIT_INVITE: str = "30/hour"
+    RATE_LIMIT_INVITE_PREVIEW: str = "20/minute"
+    RATE_LIMIT_PASSWORD_RESET: str = "5/hour"
 
     # Connectors
     GOOGLE_DRIVE_MODE: str = "mock"  # mock | real

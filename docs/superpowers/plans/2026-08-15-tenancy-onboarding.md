@@ -16,12 +16,16 @@
 - Role set stays exactly `admin` | `member`. Do **not** add roles — Qdrant payloads written at `workers/tasks_ingestion.py:63` carry these two values and any change forces a re-index.
 - Emailed tokens are stored **hashed (SHA-256)**, never plaintext. The raw token appears only in the email link.
 - Timestamps are timezone-aware UTC: `datetime.now(UTC)`, columns `DateTime(timezone=True)`.
-- Follow the existing error convention: raise `AppError` subclasses from `app/core/errors.py`. Do not raise bare `HTTPException` in new code.
+- Follow the existing error convention: raise `AppError` subclasses from `app/core/errors.py`. Do not raise bare `HTTPException` in new code. (Configuration errors raised at startup, outside any request, may use `ValueError` — they never become an HTTP response.)
+- **Workspace names are validated on input, everywhere they are set** — signup (Task 6), workspace creation (Task 9), and rename (Task 10). Defined once in `app/services/tenancy_service.py` as `validate_workspace_name(name: str) -> str`, which strips surrounding whitespace and raises `ConflictError(..., code="invalid_workspace_name")` unless the result is 1–100 characters and contains no `<` or `>`. This pairs with HTML escaping in the email templates: escaping is the real defense, and this stops the worst inputs at the door. Do not reimplement the rule per call site.
 - All new endpoints that mutate state call `log_audit_event(...)` from `app/core/audit.py`, matching the `auth.login.success` / `auth.login.failure` naming style.
 - `EMAIL_PROVIDER` defaults to `console`. `docker compose up` must keep working with **zero** email credentials.
 - Alembic revisions continue the existing linear chain. Current head is `0003`.
 - Tests live in `backend/tests/unit/` and `backend/tests/integration/`, following existing file naming (`test_<behavior>.py`).
 - `seed_dev_data.py` stays in the tree until Task 17. It is currently the only way a user exists.
+- **Integration tests share one live Postgres database and do not roll back between tests.** Anything a test creates persists for the rest of the run and across runs. Therefore: give every workspace, email, and slug a unique suffix (`uuid.uuid4().hex[:8]`) rather than a literal like `"Acme Corp"`, or a later test will collide with an earlier one's rows. Never assume an empty table.
+- **Rate-limited endpoints need `limiter.reset()`** in an autouse fixture: limits are Redis-backed and keyed by client IP, and `TestClient` always presents the same IP, so tests otherwise trip the limiter and see 429 instead of the status under test.
+- **FastAPI dependency overrides must target `client.app`**, not the `app.main` module-level singleton — `tests/conftest.py` builds a fresh app per test via `create_app()`, so overriding the singleton silently misses the request.
 
 ---
 
@@ -43,7 +47,7 @@
 | `app/api/v1/invitations.py` | Invitation endpoints |
 | `app/models/auth_token.py` | `AuthToken` model + `AuthTokenPurpose` enum |
 | `app/models/invitation.py` | `Invitation` model |
-| `alembic/versions/0004_tenancy_onboarding.py` | Migration |
+| `app/db/migrations/versions/0004_tenancy_onboarding.py` | Migration |
 
 **Backend — modified:**
 
@@ -409,55 +413,86 @@ def get_email_provider() -> EmailProvider:
 `backend/app/email/templates.py`:
 
 ```python
+from html import escape
+
 from app.email.provider import EmailMessage
 
 _PRODUCT = "Enterprise Knowledge Hub"
 
+# Everything interpolated into the HTML half is escaped. `workspace_name` is
+# chosen by whoever signed up and lands in someone else's inbox, so it is
+# attacker-controlled in a self-serve product. `link` is server-built but is
+# escaped too -- an unescaped value inside an href attribute is a habit worth
+# not forming. Plain-text halves are never escaped: entities would render
+# literally there.
+
 
 def verify_email_message(to: str, link: str) -> EmailMessage:
+    safe_link = escape(link)
     text = (
         f"Welcome to {_PRODUCT}.\n\n"
         f"Confirm this address to activate your workspace:\n{link}\n\n"
         "This link expires in 7 days. If you didn't sign up, ignore this email."
     )
-    html = (
+    body = (
         f"<p>Welcome to {_PRODUCT}.</p>"
-        f'<p><a href="{link}">Confirm your email address</a></p>'
-        f"<p>Or paste this link: {link}</p>"
+        f'<p><a href="{safe_link}">Confirm your email address</a></p>'
+        f"<p>Or paste this link: {safe_link}</p>"
         "<p>This link expires in 7 days. If you didn't sign up, ignore this email.</p>"
     )
-    return EmailMessage(to=to, subject=f"Confirm your {_PRODUCT} email", text=text, html=html)
+    return EmailMessage(to=to, subject=f"Confirm your {_PRODUCT} email", text=text, html=body)
 
 
 def password_reset_message(to: str, link: str) -> EmailMessage:
+    safe_link = escape(link)
     text = (
         f"A password reset was requested for your {_PRODUCT} account.\n\n"
         f"Reset it here:\n{link}\n\n"
         "This link expires in 1 hour. If you didn't request it, ignore this email."
     )
-    html = (
+    body = (
         f"<p>A password reset was requested for your {_PRODUCT} account.</p>"
-        f'<p><a href="{link}">Reset your password</a></p>'
-        f"<p>Or paste this link: {link}</p>"
+        f'<p><a href="{safe_link}">Reset your password</a></p>'
+        f"<p>Or paste this link: {safe_link}</p>"
         "<p>This link expires in 1 hour. If you didn't request it, ignore this email.</p>"
     )
-    return EmailMessage(to=to, subject=f"Reset your {_PRODUCT} password", text=text, html=html)
+    return EmailMessage(to=to, subject=f"Reset your {_PRODUCT} password", text=text, html=body)
 
 
 def invite_message(to: str, workspace_name: str, inviter_email: str, link: str) -> EmailMessage:
+    safe_link = escape(link)
+    safe_workspace = escape(workspace_name)
+    safe_inviter = escape(inviter_email)
     text = (
         f"{inviter_email} invited you to the {workspace_name} workspace "
         f"on {_PRODUCT}.\n\nAccept the invitation:\n{link}\n\n"
         "This invitation expires in 7 days."
     )
-    html = (
-        f"<p>{inviter_email} invited you to the <strong>{workspace_name}</strong> "
+    body = (
+        f"<p>{safe_inviter} invited you to the <strong>{safe_workspace}</strong> "
         f"workspace on {_PRODUCT}.</p>"
-        f'<p><a href="{link}">Accept the invitation</a></p>'
-        f"<p>Or paste this link: {link}</p>"
+        f'<p><a href="{safe_link}">Accept the invitation</a></p>'
+        f"<p>Or paste this link: {safe_link}</p>"
         "<p>This invitation expires in 7 days.</p>"
     )
-    return EmailMessage(to=to, subject=f"Join {workspace_name} on {_PRODUCT}", text=text, html=html)
+    return EmailMessage(to=to, subject=f"Join {workspace_name} on {_PRODUCT}", text=text, html=body)
+```
+
+Add this test to `backend/tests/unit/test_email_provider.py`:
+
+```python
+def test_html_half_escapes_user_controlled_values():
+    """workspace_name is chosen at signup and lands in someone else's inbox."""
+    msg = invite_message(
+        "a@b.com",
+        '<img src=x onerror="alert(1)">',
+        "boss@acme.com",
+        "https://app.test/invite/accept?token=abc",
+    )
+    assert "<img src=x" not in msg.html
+    assert "&lt;img src=x" in msg.html
+    # The plain-text half is not escaped -- entities would render literally.
+    assert '<img src=x onerror="alert(1)">' in msg.text
 ```
 
 In `backend/app/core/config.py`, add to `Settings` beside the existing `AI_PROVIDER` block:
@@ -474,7 +509,21 @@ In `backend/app/core/config.py`, add to `Settings` beside the existing `AI_PROVI
     RATE_LIMIT_PASSWORD_RESET: str = "5/hour"
 ```
 
-Add `httpx` to `backend/requirements.txt` if not already present (check first — the Google connector may already pull it in). Mirror the new settings into `.env.example` with the same defaults.
+Add to `backend/requirements.txt`:
+
+```
+email-validator==2.2.0
+```
+
+**This is required, not optional.** Tasks 6, 8, and 11 use `pydantic.EmailStr`, which raises at import time without it. Verified absent from the running container during pre-flight. `httpx==0.27.2` and `redis==5.0.8` are already present — do not re-add them.
+
+After editing requirements, rebuild so the container has the package:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build backend celery_worker celery_beat
+```
+
+Mirror the new settings into `.env.example` with the same defaults.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -493,7 +542,7 @@ git commit -m "feat: add swappable email provider with console default"
 ### Task 3: Data model and migration 0004
 
 **Files:**
-- Create: `backend/app/models/auth_token.py`, `backend/app/models/invitation.py`, `backend/alembic/versions/0004_tenancy_onboarding.py`
+- Create: `backend/app/models/auth_token.py`, `backend/app/models/invitation.py`, `backend/app/db/migrations/versions/0004_tenancy_onboarding.py`
 - Modify: `backend/app/models/user.py`, `backend/app/models/__init__.py`
 - Test: `backend/tests/integration/test_tenancy_models.py`
 
@@ -607,7 +656,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, new_uuid
+from app.db.base import Base, TimestampMixin, new_uuid
 
 
 class AuthTokenPurpose(str, enum.Enum):
@@ -630,7 +679,7 @@ class AuthToken(Base, TimestampMixin):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 ```
 
-> Check `app/models/base.py` for the exact names of `Base`, `TimestampMixin`, and `new_uuid` before writing — mirror whatever `app/models/workspace.py` imports.
+> Check `app/db/base.py` for the exact names of `Base`, `TimestampMixin`, and `new_uuid` before writing — mirror whatever `app/models/workspace.py` imports.
 
 `backend/app/models/invitation.py`:
 
@@ -642,7 +691,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, new_uuid
+from app.db.base import Base, TimestampMixin, new_uuid
 from app.models.workspace import WorkspaceRole
 
 
@@ -676,7 +725,7 @@ In `backend/app/models/user.py` add:
 
 Import both new models in `backend/app/models/__init__.py` so Alembic autogenerate and `Base.metadata` see them.
 
-Migration `backend/alembic/versions/0004_tenancy_onboarding.py`:
+Migration `backend/app/db/migrations/versions/0004_tenancy_onboarding.py`:
 
 ```python
 """tenancy: auth tokens, invitations, user verification fields
@@ -795,7 +844,7 @@ Expected: both succeed. A migration that cannot roll back is a liability in prod
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/app/models backend/alembic/versions/0004_tenancy_onboarding.py backend/tests/integration/test_tenancy_models.py
+git add backend/app/models backend/app/db/migrations/versions/0004_tenancy_onboarding.py backend/tests/integration/test_tenancy_models.py
 git commit -m "feat: add auth_tokens and invitations tables with user verification fields"
 ```
 
@@ -913,13 +962,15 @@ git commit -m "feat: add hashed single-use token service"
 
 **Interfaces:**
 - Consumes: `Workspace`, `WorkspaceMembership`, `WorkspaceRole`, `User`
-- Produces: `TenancyService(db)` with `generate_slug(name: str) -> str`, `create_workspace(name: str, owner: User) -> Workspace`, `list_memberships(user_id: UUID) -> list[WorkspaceMembership]`, `count_admins(workspace_id: UUID) -> int`
+- Produces: module-level `validate_workspace_name(name: str) -> str`; `TenancyService(db)` with `generate_slug(name: str) -> str`, `create_workspace(name: str, owner: User) -> Workspace`, `list_memberships(user_id: UUID) -> list[WorkspaceMembership]`, `count_admins(workspace_id: UUID) -> int`
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # backend/tests/integration/test_tenancy_service.py
 import uuid
+
+import pytest
 
 from app.models.user import User
 from app.models.workspace import WorkspaceRole
@@ -953,6 +1004,56 @@ def test_blank_slug_falls_back(db):
     assert TenancyService(db).generate_slug("!!!").startswith("workspace")
 
 
+def test_validate_workspace_name_strips_and_returns(db):
+    from app.services.tenancy_service import validate_workspace_name
+
+    assert validate_workspace_name("  Acme Corp  ") == "Acme Corp"
+
+
+def test_validate_workspace_name_rejects_angle_brackets(db):
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    with pytest.raises(ConflictError) as exc:
+        validate_workspace_name('<img src=x onerror="alert(1)">')
+    assert exc.value.code == "invalid_workspace_name"
+
+
+def test_validate_workspace_name_rejects_empty_and_overlong(db):
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    for bad in ("", "   ", "x" * 101):
+        with pytest.raises(ConflictError):
+            validate_workspace_name(bad)
+
+
+def test_validate_workspace_name_allows_ordinary_punctuation(db):
+    from app.services.tenancy_service import validate_workspace_name
+
+    assert validate_workspace_name("O'Brien & Sons, Inc.") == "O'Brien & Sons, Inc."
+
+
+def test_validate_workspace_name_rejects_embedded_newline(db):
+    """The name reaches an email *subject* line; a newline there is header
+    injection. .strip() would not catch an interior one."""
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    with pytest.raises(ConflictError) as exc:
+        validate_workspace_name("Acme\nBcc: victim@example.com")
+    assert exc.value.code == "invalid_workspace_name"
+
+
+def test_validate_workspace_name_rejects_tab_and_null(db):
+    from app.core.errors import ConflictError
+    from app.services.tenancy_service import validate_workspace_name
+
+    for bad in ("Acme\tCorp", "Acme\x00Corp", "Acme\rCorp"):
+        with pytest.raises(ConflictError):
+            validate_workspace_name(bad)
+
+
 def test_create_workspace_makes_owner_an_admin(db):
     owner = _user(db)
     workspace = TenancyService(db).create_workspace("Acme", owner)
@@ -984,11 +1085,46 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.errors import ConflictError
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _FALLBACK_SLUG = "workspace"
+_MAX_WORKSPACE_NAME = 100
+
+
+def validate_workspace_name(name: str) -> str:
+    """Single definition of what a workspace name may be, used by signup,
+    workspace creation, and rename.
+
+    Workspace names are set by whoever signs up and are rendered into
+    invitation emails that land in other people's inboxes. The templates
+    escape on output -- that is the real defense -- but rejecting angle
+    brackets at the door keeps the worst inputs out of the database in the
+    first place.
+    """
+    cleaned = name.strip()
+    if not 1 <= len(cleaned) <= _MAX_WORKSPACE_NAME:
+        raise ConflictError(
+            f"Workspace name must be 1-{_MAX_WORKSPACE_NAME} characters",
+            code="invalid_workspace_name",
+        )
+    if "<" in cleaned or ">" in cleaned:
+        raise ConflictError(
+            "Workspace name may not contain < or >", code="invalid_workspace_name"
+        )
+    # Control characters -- newlines especially -- must not survive. The
+    # workspace name is interpolated into the *subject* of invitation email,
+    # and a newline there is header injection (an attacker-added Bcc, say).
+    # .strip() only removes surrounding whitespace, so an interior "\n" would
+    # otherwise pass straight through to the mail transport.
+    if any(ch < " " or ch == "\x7f" for ch in cleaned):
+        raise ConflictError(
+            "Workspace name may not contain control characters",
+            code="invalid_workspace_name",
+        )
+    return cleaned
 
 
 class TenancyService:
@@ -1010,6 +1146,7 @@ class TenancyService:
         )
 
     def create_workspace(self, name: str, owner: User) -> Workspace:
+        name = validate_workspace_name(name)
         workspace = Workspace(name=name, slug=self.generate_slug(name))
         self._db.add(workspace)
         self._db.flush()
@@ -1072,17 +1209,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _link_token(provider: FakeEmailProvider) -> str:
@@ -1473,7 +1623,9 @@ def _resolve_membership(
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise PermissionDeniedError("User is not active")
-    membership = WorkspaceRepository(db).get_membership(user_id, workspace_id)
+    # NOTE: signature is get_membership(workspace_id, user_id) -- both are
+    # UUIDs, so a swapped order fails silently by always returning None.
+    membership = WorkspaceRepository(db).get_membership(workspace_id, user_id)
     if membership is None:
         raise PermissionDeniedError("You are not a member of this workspace")
 
@@ -1617,17 +1769,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _signup(client, email: str) -> None:
@@ -1802,17 +1967,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _verified_signup(client, fake_email, workspace_name="Acme") -> tuple[str, str]:
@@ -1956,7 +2134,7 @@ def switch_workspace(
     db: Session = Depends(get_db),
 ) -> LoginResponse:
     membership = WorkspaceRepository(db).get_membership(
-        current_user.user_id, payload.workspace_id
+        payload.workspace_id, current_user.user_id
     )
     if membership is None:
         raise PermissionDeniedError("You are not a member of that workspace")
@@ -2071,17 +2249,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _verified_admin(client, fake_email) -> tuple[str, str]:
@@ -2304,7 +2495,8 @@ def rename_workspace(
     db: Session = Depends(get_db),
 ) -> WorkspaceResponse:
     workspace = db.get(Workspace, current_user.workspace_id)
-    workspace.name = payload.name
+    # Same rule as signup -- a rename must not smuggle in what signup rejects.
+    workspace.name = validate_workspace_name(payload.name)
     db.commit()
     log_audit_event(
         "workspace.renamed",
@@ -2353,17 +2545,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def _verified_admin(client, fake_email) -> tuple[str, str]:
@@ -2553,7 +2758,7 @@ class InvitationService:
         existing_user = WorkspaceRepository(self._db).get_user_by_email(email)
         if existing_user is not None:
             membership = WorkspaceRepository(self._db).get_membership(
-                existing_user.id, workspace_id
+                workspace_id, existing_user.id
             )
             if membership is not None:
                 raise ConflictError(
@@ -3155,9 +3360,9 @@ git commit -m "feat: add workspace and member settings pages"
 
 Render the active workspace name as a dropdown listing `me.workspaces`. Selecting one calls `switchWorkspace(id)`, which mints a new token and re-fetches `/auth/me`. Then `navigate('/chat')` — staying on a document page would show a document from the previous tenant.
 
-If `me.workspaces.length === 1`, render the name as plain text with no dropdown.
+Always render the dropdown, even with a single workspace. An earlier draft rendered plain text in that case, which combined with putting "Create workspace" inside the dropdown to make workspace creation unreachable for exactly the users who have not yet created a second one — defeating goal #4 through a cosmetic rule.
 
-Add a "Create workspace" item at the bottom that prompts for a name and calls `POST /api/v1/workspaces`, then switches into it.
+Add a "Create workspace" item that opens a dialog (reuse `components/ui/dialog.tsx`; `DocumentViewerModal.tsx` shows the pattern) with a name field, calls `POST /api/v1/workspaces`, then switches into the new workspace. On 409 `invalid_workspace_name`, show the error inline against the field and keep the dialog open. Do not use `window.prompt` — it cannot display validation errors and cannot be driven by browser automation, so the path would be permanently unverifiable.
 
 - [ ] **Step 2: Mount it in the shell**
 
@@ -3204,17 +3409,30 @@ import uuid
 
 import pytest
 
+from app.core.rate_limit import limiter
 from app.email.factory import get_email_provider
 from app.email.provider import FakeEmailProvider
-from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate limits are Redis-backed and keyed by client IP, which TestClient
+    always reports as the same address. Without a reset, calls across this
+    file's tests trip the limiter and return 429 instead of the status under
+    test."""
+    limiter.reset()
+    yield
 
 
 @pytest.fixture
-def fake_email():
+def fake_email(client):
+    """Override on the app instance `client` wraps. tests/conftest.py builds a
+    fresh app per test via create_app(), so overriding app.main's module-level
+    singleton would silently miss this client's requests."""
     provider = FakeEmailProvider()
-    app.dependency_overrides[get_email_provider] = lambda: provider
+    client.app.dependency_overrides[get_email_provider] = lambda: provider
     yield provider
-    app.dependency_overrides.pop(get_email_provider, None)
+    client.app.dependency_overrides.pop(get_email_provider, None)
 
 
 def test_a_usable_account_can_be_created_without_the_seed(client, fake_email):

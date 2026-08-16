@@ -24,10 +24,15 @@ services:
       - "11434:11434"
 
   backend:
+    build:
+      target: dev
     ports:
       - "8010:8000"
     volumes:
       - ./backend:/app
+      # Persist the downloaded embedding model across image rebuilds --
+      # otherwise every rebuild re-downloads BAAI/bge-small-en-v1.5.
+      - hf_cache:/home/app/.cache/huggingface
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
 
   celery_worker:
@@ -48,3 +53,7 @@ services:
     volumes: !override
       - ./frontend:/app
       - /app/node_modules
+
+# Named volume for the dev-only HuggingFace model cache (see backend service).
+volumes:
+  hf_cache:

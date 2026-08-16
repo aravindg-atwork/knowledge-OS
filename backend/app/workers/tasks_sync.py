@@ -1,5 +1,7 @@
 import uuid
 
+from sqlalchemy import select
+
 from app.core.errors import TransientConnectorError
 from app.db.session import SessionLocal
 from app.repositories.document_repository import DocumentRepository
@@ -15,8 +17,30 @@ from app.workers.task_utils import CONNECTOR_RETRY_KWARGS, remote_file_to_dict
     **CONNECTOR_RETRY_KWARGS,
 )
 def sync_connector_task(self, connector_account_id: str) -> dict:
+    from app.models.sync_state import ConnectorAccount
+    from app.models.workspace import WorkspaceMembership
+
     db = SessionLocal()
     try:
+        # Worker-level backstop, mirroring sync_all_connectors_task. Callers
+        # (the OAuth callback, the manual /sync endpoint) do their own checks,
+        # but enforcing it here means no caller can queue ingestion for a
+        # soft-disabled connector or one whose owner has left the workspace.
+        # user_id IS NULL accounts are workspace-level shared connectors with
+        # no owning membership to check, so they sync unless disabled.
+        account = db.get(ConnectorAccount, uuid.UUID(connector_account_id))
+        if account is None or account.disabled_at is not None:
+            return {"skipped": "connector account is disabled or missing"}
+        if account.user_id is not None:
+            membership = db.scalars(
+                select(WorkspaceMembership).where(
+                    WorkspaceMembership.workspace_id == account.workspace_id,
+                    WorkspaceMembership.user_id == account.user_id,
+                )
+            ).first()
+            if membership is None:
+                return {"skipped": "connector owner is no longer a workspace member"}
+
         change_set = SyncService(db).run_sync(uuid.UUID(connector_account_id))
 
         document_repo = DocumentRepository(db)
@@ -40,12 +64,37 @@ def sync_connector_task(self, connector_account_id: str) -> dict:
 
 @celery_app.task(name="app.workers.tasks_sync.sync_all_connectors_task")
 def sync_all_connectors_task() -> dict:
-    """Celery beat entry point: syncs every configured connector account."""
+    """Celery beat entry point: syncs every configured connector account.
+
+    Defence in depth: TenancyService.remove_member soft-disables (sets
+    disabled_at, clears credential_ref on) a removed member's
+    ConnectorAccount rows as the primary fix, but this task is the backstop.
+    It skips any disabled account, and also skips any user-owned account
+    whose (workspace_id, user_id) no longer has a membership row -- covering
+    any other path that could leave a connector account orphaned without
+    disabled_at being set. Accounts with user_id IS NULL are the
+    shared/workspace-level accounts (e.g. the mock seed connector) and have
+    no owning membership to check, so they always sync (unless disabled).
+    """
     from app.models.sync_state import ConnectorAccount
+    from app.models.workspace import WorkspaceMembership
 
     db = SessionLocal()
     try:
-        account_ids = [str(a.id) for a in db.query(ConnectorAccount).all()]
+        account_ids = []
+        for account in db.scalars(select(ConnectorAccount)):
+            if account.disabled_at is not None:
+                continue
+            if account.user_id is not None:
+                membership = db.scalars(
+                    select(WorkspaceMembership).where(
+                        WorkspaceMembership.workspace_id == account.workspace_id,
+                        WorkspaceMembership.user_id == account.user_id,
+                    )
+                ).first()
+                if membership is None:
+                    continue
+            account_ids.append(str(account.id))
     finally:
         db.close()
 

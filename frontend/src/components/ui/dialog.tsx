@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -11,6 +11,15 @@ interface DialogProps {
 }
 
 export function Dialog({ open, onClose, title, children, className }: DialogProps) {
+  useEffect(() => {
+    if (!open) return
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [open, onClose])
+
   if (!open) return null
 
   return (

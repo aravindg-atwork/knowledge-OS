@@ -1,4 +1,5 @@
 import uuid
+from html import escape
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
@@ -6,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import CurrentUser, get_current_user
+from app.api.deps import CurrentUser, get_current_user, require_admin
 from app.connectors import google_oauth
 from app.core.config import Settings, get_settings
 from app.core.errors import NotFoundError
@@ -14,6 +15,8 @@ from app.core.security import create_oauth_state_token, decode_oauth_state_token
 from app.db.session import get_db
 from app.models.sync_state import ConnectorAccount, ConnectorMode, ConnectorType
 from app.models.user import User
+from app.models.workspace import WorkspaceRole
+from app.repositories.workspace_repository import WorkspaceRepository
 from app.workers.tasks_sync import sync_connector_task
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
@@ -37,8 +40,10 @@ def _trigger_sync(
     connector_type: ConnectorType, current_user: CurrentUser, db: Session
 ) -> SyncTriggerResponse:
     # Scoped to the caller's own connection -- a workspace can have several
-    # (one per teammate who connected), so "sync now" means "sync mine", not
-    # "sync whichever one happens to match this workspace+type".
+    # (one per admin who connected -- OAuth setup is admin-only, see
+    # require_admin on /google/oauth/start below), so "sync now" means
+    # "sync mine", not "sync whichever one happens to match this
+    # workspace+type".
     account = db.scalars(
         select(ConnectorAccount).where(
             ConnectorAccount.workspace_id == current_user.workspace_id,
@@ -46,10 +51,27 @@ def _trigger_sync(
             ConnectorAccount.user_id == current_user.user_id,
         )
     ).first()
+    # A disabled account (see TenancyService.remove_member) has had its
+    # credentials revoked -- treat it the same as "never connected" rather
+    # than letting a manual sync re-trigger it by hand. Same NotFoundError
+    # shape as the not-connected-yet case below; there's nothing about
+    # "disabled" a caller can act on differently.
+    if account is not None and account.disabled_at is not None:
+        account = None
     if account is None:
+        display_name = _DISPLAY_NAME_BY_TYPE[connector_type]
+        if current_user.role is WorkspaceRole.admin:
+            raise NotFoundError(
+                f"You haven't connected {display_name} yet -- "
+                "connect it first via /connectors/google/oauth/start"
+            )
+        # /google/oauth/start is admin-only, so pointing a member at it
+        # would be a dead end: they'd hit a 403 there too. Tell them the
+        # truth instead of an instruction they can't follow.
         raise NotFoundError(
-            f"You haven't connected {_DISPLAY_NAME_BY_TYPE[connector_type]} yet -- "
-            "connect it first via /connectors/google/oauth/start"
+            f"You haven't connected {display_name} yet. Connector setup is "
+            f"admin-only in this workspace -- ask a workspace admin to connect "
+            f"{display_name}."
         )
     task = sync_connector_task.delay(str(account.id))
     return SyncTriggerResponse(connector_account_id=str(account.id), task_id=task.id)
@@ -78,7 +100,7 @@ class OAuthStartResponse(BaseModel):
 @router.get("/google/oauth/start", response_model=OAuthStartResponse)
 def start_google_oauth(
     connector_type: ConnectorType = Query(..., description="google_drive or gmail"),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_admin),
     settings: Settings = Depends(get_settings),
 ) -> OAuthStartResponse:
     """Called by the frontend (authenticated fetch) to get the Google consent
@@ -130,6 +152,21 @@ def google_oauth_callback(
     workspace_id = uuid.UUID(claims["workspace_id"])
     user_id = uuid.UUID(claims["user_id"])
 
+    # The state token stays valid for 10 minutes (see create_oauth_state_token),
+    # so membership can be revoked between /oauth/start and this callback.
+    # Re-check it before exchanging the code: otherwise a member removed
+    # mid-consent gets a live refresh token stored against the workspace they
+    # just left, plus one immediate ingest into it. This is a DB lookup on the
+    # identity the signed state already names -- the endpoint stays
+    # unauthenticated by design, since Google redirects a browser here with no
+    # Authorization header.
+    if WorkspaceRepository(db).get_membership(workspace_id, user_id) is None:
+        return _result_page(
+            "You're no longer a member of that workspace, so this connection "
+            "wasn't completed.",
+            ok=False,
+        )
+
     try:
         credentials = google_oauth.exchange_code(
             client_id=settings.GOOGLE_OAUTH_CLIENT_ID,
@@ -165,6 +202,11 @@ def google_oauth_callback(
         db.add(account)
     account.mode = ConnectorMode.real
     account.credential_ref = {"refresh_token": credentials.refresh_token}
+    # A membership-checked reconnect is exactly the event that should re-enable
+    # a row soft-disabled by remove_member. Without this, someone removed and
+    # later re-invited reconnects successfully, gets one sync, and then has a
+    # silently dead connector -- while we hold a live refresh token for it.
+    account.disabled_at = None
     db.commit()
     db.refresh(account)
 
@@ -178,8 +220,17 @@ def google_oauth_callback(
 
 
 def _result_page(message: str, *, ok: bool = True) -> str:
+    """Renders a plain-text status message as a tiny standalone HTML page.
+
+    `message` may embed values this endpoint doesn't control -- notably the
+    `error` query parameter Google (or anyone crafting a link to this
+    callback) can set on the OAuth callback request. Escaping it here,
+    once, for every caller is what keeps that a plain status message
+    instead of reflected XSS on the API origin (mirrors the html.escape
+    discipline in app/email/templates.py).
+    """
     color = "#1a7f37" if ok else "#c62828"
     return (
         "<html><body style='font-family: system-ui; text-align: center; padding: 4rem;'>"
-        f"<h2 style='color: {color}'>{message}</h2></body></html>"
+        f"<h2 style='color: {color}'>{escape(message)}</h2></body></html>"
     )

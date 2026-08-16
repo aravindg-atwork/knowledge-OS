@@ -59,6 +59,15 @@ class ConnectorAccount(Base, TimestampMixin):
     )
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     credential_ref: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # Set when the connecting member is removed from the workspace (see
+    # TenancyService.remove_member). The account and everything it already
+    # ingested are kept -- that content is already part of the workspace's
+    # shared corpus -- but disabled_at marks it as no longer live: the
+    # scheduler (sync_all_connectors_task) and the manual /sync endpoint both
+    # skip it. credential_ref is cleared out alongside this (not modeled
+    # here, done at the call site) since that's what actually revokes the
+    # stored Google refresh token.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SyncRun(Base):

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useNavigate, NavLink } from 'react-router-dom'
-import { MessageSquare, FileText, Moon, Sun, LogOut } from 'lucide-react'
+import { MessageSquare, FileText, Moon, Sun, LogOut, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { clearStoredToken } from '@/lib/apiClient'
+import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher'
+import { useAuth } from './AuthContext'
 
 function useDarkMode() {
   const [isDark, setIsDark] = useState(
@@ -19,9 +20,10 @@ function useDarkMode() {
 export function AppShell() {
   const { isDark, toggle } = useDarkMode()
   const navigate = useNavigate()
+  const { me, logout } = useAuth()
 
   function handleLogout() {
-    clearStoredToken()
+    logout()
     navigate('/login')
   }
 
@@ -35,7 +37,12 @@ export function AppShell() {
     <div className="flex h-screen">
       <aside className="flex w-56 flex-col justify-between border-r border-border p-4">
         <div>
-          <p className="mb-6 px-1 text-sm font-semibold">Knowledge Hub</p>
+          <p className="mb-1 px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Knowledge Hub
+          </p>
+          <div className="mb-6">
+            <WorkspaceSwitcher />
+          </div>
           <nav className="space-y-1">
             <NavLink to="/chat" className={navItemClass}>
               <MessageSquare size={16} /> Chat
@@ -43,6 +50,11 @@ export function AppShell() {
             <NavLink to="/documents" className={navItemClass}>
               <FileText size={16} /> Documents
             </NavLink>
+            {me?.role === 'admin' && (
+              <NavLink to="/settings/workspace" className={navItemClass}>
+                <Settings size={16} /> Settings
+              </NavLink>
+            )}
           </nav>
         </div>
         <div className="space-y-1">

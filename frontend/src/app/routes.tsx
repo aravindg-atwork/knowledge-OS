@@ -1,30 +1,53 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { LoginPage } from '@/features/auth/LoginPage'
+import { SignupPage } from '@/features/auth/SignupPage'
+import { VerifyEmailPage } from '@/features/auth/VerifyEmailPage'
+import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage'
+import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage'
+import { AcceptInvitePage } from '@/features/invites/AcceptInvitePage'
 import { ChatPage } from '@/features/chat/ChatPage'
 import { DocumentListPage } from '@/features/documents/DocumentListPage'
-import { getStoredToken } from '@/lib/apiClient'
+import { WorkspaceSettingsPage } from '@/features/settings/WorkspaceSettingsPage'
+import { MembersPage } from '@/features/settings/MembersPage'
+import { RequireVerified, RequireAdmin } from './guards'
 import { AppShell } from './AppShell'
-
-function RequireAuth({ children }: { children: React.ReactNode }) {
-  if (!getStoredToken()) return <Navigate to="/login" replace />
-  return <>{children}</>
-}
 
 export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/invite/accept" element={<AcceptInvitePage />} />
       <Route
         path="/"
         element={
-          <RequireAuth>
+          <RequireVerified>
             <AppShell />
-          </RequireAuth>
+          </RequireVerified>
         }
       >
         <Route index element={<Navigate to="/chat" replace />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="documents" element={<DocumentListPage />} />
+        <Route
+          path="settings/workspace"
+          element={
+            <RequireAdmin>
+              <WorkspaceSettingsPage />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="settings/members"
+          element={
+            <RequireAdmin>
+              <MembersPage />
+            </RequireAdmin>
+          }
+        />
       </Route>
     </Routes>
   )
