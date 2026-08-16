@@ -4,6 +4,7 @@ import { SignupPage } from '@/features/auth/SignupPage'
 import { VerifyEmailPage } from '@/features/auth/VerifyEmailPage'
 import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage'
+import { AcceptInvitePage } from '@/features/invites/AcceptInvitePage'
 import { ChatPage } from '@/features/chat/ChatPage'
 import { DocumentListPage } from '@/features/documents/DocumentListPage'
 import { RequireVerified } from './guards'
@@ -17,6 +18,7 @@ export function AppRoutes() {
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/invite/accept" element={<AcceptInvitePage />} />
       <Route
         path="/"
         element={
