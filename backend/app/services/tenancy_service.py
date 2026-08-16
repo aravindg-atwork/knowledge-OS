@@ -1,7 +1,8 @@
 import re
 import uuid
+from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -159,18 +160,31 @@ class TenancyService:
                     "A workspace must keep at least one admin", code="last_admin"
                 )
         # A removed member's ConnectorAccount rows hold live Google refresh
-        # tokens. If they survive, Celery beat's sync_all_connectors_task
-        # (which has no membership check of its own -- see the defence in
-        # depth there) would keep pulling their Drive/Gmail content into
-        # this workspace's corpus forever. Delete them in the same
-        # transaction as the membership so there is no window where the
-        # membership is gone but the connector is still live.
-        self._db.execute(
-            delete(ConnectorAccount).where(
+        # tokens, and documents/sync_runs/sync_cursors reference them with no
+        # ondelete rule -- deleting the row (the original fix) raises a
+        # FOREIGN KEY violation for any account that ever actually synced
+        # anything, turning member removal into a 500. And even if it didn't,
+        # deleting would take the workspace's already-ingested content out
+        # from under the whole team, who share that corpus.
+        #
+        # So: soft-disable instead of delete. The account row and everything
+        # it already ingested stay put. disabled_at marks it dead to the
+        # scheduler and manual sync (sync_all_connectors_task,
+        # connectors._trigger_sync); clearing credential_ref is what actually
+        # revokes the stored Google refresh token -- disabled_at alone would
+        # leave a live token sitting in the database. Do both in the same
+        # transaction as the membership delete so there is no window where
+        # the membership is gone but the connector is still live.
+        accounts = self._db.scalars(
+            select(ConnectorAccount).where(
                 ConnectorAccount.workspace_id == workspace_id,
                 ConnectorAccount.user_id == user_id,
             )
         )
+        now = datetime.now(UTC)
+        for account in accounts:
+            account.disabled_at = now
+            account.credential_ref = {}
         self._db.delete(membership)
         self._db.flush()
 

@@ -44,13 +44,15 @@ def sync_connector_task(self, connector_account_id: str) -> dict:
 def sync_all_connectors_task() -> dict:
     """Celery beat entry point: syncs every configured connector account.
 
-    Defence in depth: TenancyService.remove_member deletes a removed
-    member's ConnectorAccount rows as the primary fix, but this task is the
-    backstop. It skips any user-owned account whose (workspace_id, user_id)
-    no longer has a membership row -- covering any other path that could
-    leave a connector account orphaned. Accounts with user_id IS NULL are
-    the shared/workspace-level accounts (e.g. the mock seed connector) and
-    have no owning membership to check, so they always sync.
+    Defence in depth: TenancyService.remove_member soft-disables (sets
+    disabled_at, clears credential_ref on) a removed member's
+    ConnectorAccount rows as the primary fix, but this task is the backstop.
+    It skips any disabled account, and also skips any user-owned account
+    whose (workspace_id, user_id) no longer has a membership row -- covering
+    any other path that could leave a connector account orphaned without
+    disabled_at being set. Accounts with user_id IS NULL are the
+    shared/workspace-level accounts (e.g. the mock seed connector) and have
+    no owning membership to check, so they always sync (unless disabled).
     """
     from app.models.sync_state import ConnectorAccount
     from app.models.workspace import WorkspaceMembership
@@ -59,6 +61,8 @@ def sync_all_connectors_task() -> dict:
     try:
         account_ids = []
         for account in db.scalars(select(ConnectorAccount)):
+            if account.disabled_at is not None:
+                continue
             if account.user_id is not None:
                 membership = db.scalars(
                     select(WorkspaceMembership).where(

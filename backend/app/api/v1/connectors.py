@@ -50,6 +50,13 @@ def _trigger_sync(
             ConnectorAccount.user_id == current_user.user_id,
         )
     ).first()
+    # A disabled account (see TenancyService.remove_member) has had its
+    # credentials revoked -- treat it the same as "never connected" rather
+    # than letting a manual sync re-trigger it by hand. Same NotFoundError
+    # shape as the not-connected-yet case below; there's nothing about
+    # "disabled" a caller can act on differently.
+    if account is not None and account.disabled_at is not None:
+        account = None
     if account is None:
         display_name = _DISPLAY_NAME_BY_TYPE[connector_type]
         if current_user.role is WorkspaceRole.admin:
