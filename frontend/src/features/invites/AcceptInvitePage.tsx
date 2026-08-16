@@ -33,6 +33,7 @@ export function AcceptInvitePage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [alreadyMember, setAlreadyMember] = useState(false)
   const [emailMismatch, setEmailMismatch] = useState(false)
+  const [loginRequired, setLoginRequired] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -71,6 +72,7 @@ export function AcceptInvitePage() {
     setSubmitError(null)
     setAlreadyMember(false)
     setEmailMismatch(false)
+    setLoginRequired(false)
     setSubmitting(true)
     try {
       const { access_token } = await acceptInvite(
@@ -84,6 +86,13 @@ export function AcceptInvitePage() {
           setAlreadyMember(true)
         } else if (err.code === 'invite_email_mismatch') {
           setEmailMismatch(true)
+        } else if (err.code === 'login_required') {
+          // An account already exists for this address -- the invite link
+          // must never act as a password-free login into it (see backend
+          // FIX 3). Direct them to sign in first; reopening this same link
+          // afterwards will complete acceptance via the matching-session
+          // path.
+          setLoginRequired(true)
         } else if (err.code === 'token_expired') {
           setPreviewError(EXPIRED_MESSAGE)
         } else if (err.code === 'invalid_token') {
@@ -144,6 +153,18 @@ export function AcceptInvitePage() {
               Go to chat
             </Link>
           </p>
+        ) : loginRequired ? (
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              An account already exists for {preview.email}. Sign in, then open this invitation
+              link again to join the workspace.
+            </p>
+            <Link to="/login">
+              <Button variant="outline" className="w-full">
+                Go to sign in
+              </Button>
+            </Link>
+          </div>
         ) : emailMismatch ? (
           <div className="space-y-3 text-sm text-red-500">
             <p>

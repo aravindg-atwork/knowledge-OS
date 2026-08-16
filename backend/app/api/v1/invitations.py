@@ -153,10 +153,20 @@ def accept_invitation(
     valid session token. The try/except is scoped to the decode call only so
     unrelated bugs later in this function are never mistaken for a bad
     token.
+
+    If the invited address already has an account, `payload.password` is
+    never used to authenticate it -- posting a password there would let
+    anyone who merely intercepts/guesses the invite token log straight into
+    an existing account, no credentials required (spec: "Account exists ->
+    link opens login, then creates the membership"). So an existing account
+    with no matching session gets a clean 403 (login_required) instead of a
+    minted token; only a session already authenticated as that exact address
+    is allowed to complete acceptance.
     """
     service = InvitationService(db)
     invitation = service.find_valid(payload.token)
 
+    has_matching_session = False
     if authorization and authorization.startswith("Bearer "):
         try:
             claims = decode_access_token(authorization.removeprefix("Bearer "))
@@ -171,6 +181,7 @@ def accept_invitation(
                 "This invitation was sent to a different email address",
                 code="invite_email_mismatch",
             )
+        has_matching_session = session_user is not None
 
     user = WorkspaceRepository(db).get_user_by_email(invitation.email)
     if user is None:
@@ -185,6 +196,12 @@ def accept_invitation(
         )
         db.add(user)
         db.flush()
+    elif not has_matching_session:
+        raise PermissionDeniedError(
+            "An account with that email already exists. Sign in, then open this "
+            "invitation link again to join the workspace.",
+            code="login_required",
+        )
 
     service.accept(invitation, user)
     db.commit()

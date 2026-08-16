@@ -241,6 +241,70 @@ def test_concurrent_duplicate_invite_returns_409_not_500(db, monkeypatch):
     db.flush()
 
 
+def test_accept_for_existing_account_without_session_requires_login(client, fake_email):
+    """FIX 3: an invite link must never be a password-free login into an
+    existing account. If the invited address already has an account and the
+    caller presents no session, accept must refuse with login_required and
+    mint no token -- posting a password (even one the caller made up) must
+    not authenticate someone else's account."""
+    admin_token, _ = _verified_admin(client, fake_email)
+    existing_email = f"already-has-account-{uuid.uuid4().hex[:8]}@acme.com"
+    client.post(
+        "/api/v1/auth/signup",
+        json={
+            "email": existing_email,
+            "password": "correct-horse-battery",
+            "full_name": "Existing",
+            "workspace_name": f"Existing Co {uuid.uuid4().hex[:8]}",
+        },
+    )
+
+    client.post(
+        "/api/v1/invitations",
+        json={"email": existing_email, "role": "member"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    resp = client.post(
+        "/api/v1/invitations/accept",
+        json={"token": _invite_token(fake_email), "password": "some-guessed-password"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "login_required"
+    assert "access_token" not in resp.json()
+
+
+def test_accept_for_existing_account_with_matching_session_succeeds(client, fake_email):
+    """FIX 3: once the invitee has actually logged in (their own session,
+    matching the invited address), reopening the invitation link must still
+    work and create the membership -- this is the intended "link opens
+    login, then creates the membership" flow."""
+    admin_token, _ = _verified_admin(client, fake_email)
+    existing_email = f"logs-in-first-{uuid.uuid4().hex[:8]}@acme.com"
+    signup_resp = client.post(
+        "/api/v1/auth/signup",
+        json={
+            "email": existing_email,
+            "password": "correct-horse-battery",
+            "full_name": "Existing",
+            "workspace_name": f"Existing Co {uuid.uuid4().hex[:8]}",
+        },
+    )
+    session_token = signup_resp.json()["access_token"]
+
+    client.post(
+        "/api/v1/invitations",
+        json={"email": existing_email, "role": "member"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    resp = client.post(
+        "/api/v1/invitations/accept",
+        json={"token": _invite_token(fake_email)},
+        headers={"Authorization": f"Bearer {session_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["access_token"]
+
+
 def test_accept_invalidates_verification_cache_in_other_workspaces(client, fake_email, db):
     """FIX 2: InvitationService.accept() can flip email_verified_at on an
     existing, previously-unverified user. If that user already belongs to a
