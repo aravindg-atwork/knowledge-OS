@@ -109,6 +109,34 @@ def test_verification_unblocks_documents(client, fake_email):
     assert resp.status_code == 200
 
 
+def test_verification_cache_invalidated_immediately_no_sleep(client, fake_email):
+    """FIX 2: api/deps.py caches "role|verified" per (user, workspace) for
+    60s. If verify-email doesn't invalidate that cache, a request made
+    right after signup (e.g. the frontend's route-guard call to /auth/me)
+    would warm the cache with verified=False, and a workspace-scoped
+    endpoint would then keep 403ing with email_not_verified for up to 60s
+    after verification actually succeeded -- even though the UI already
+    thinks the user is in. This must not require any sleep to pass."""
+    email = f"cache-{uuid.uuid4().hex[:8]}@acme.com"
+    token = client.post("/api/v1/auth/signup", json=_signup_body(email)).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Warm the membership cache in the unverified state, mirroring the
+    # frontend's real route-guard call right after signup.
+    warm = client.get("/api/v1/auth/me", headers=headers)
+    assert warm.status_code == 200
+    assert warm.json()["email_verified"] is False
+
+    verify_resp = client.post(
+        "/api/v1/auth/verify-email", json={"token": _link_token(fake_email)}
+    )
+    assert verify_resp.status_code == 200
+
+    # Immediately -- no sleep, no waiting out the cache TTL.
+    resp = client.get("/api/v1/documents", headers=headers)
+    assert resp.status_code == 200
+
+
 def test_verification_token_is_single_use(client, fake_email):
     email = f"once-{uuid.uuid4().hex[:8]}@acme.com"
     client.post("/api/v1/auth/signup", json=_signup_body(email))

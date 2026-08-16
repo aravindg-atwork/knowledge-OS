@@ -7,7 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import CurrentUser, get_current_user_allow_unverified
+from app.api.deps import (
+    CurrentUser,
+    get_current_user_allow_unverified,
+    invalidate_membership_cache,
+)
 from app.core.audit import log_audit_event
 from app.core.config import get_settings
 from app.core.errors import ConflictError, InvalidTokenError, PermissionDeniedError, TokenExpiredError
@@ -183,6 +187,16 @@ def verify_email(payload: TokenOnlyRequest, db: Session = Depends(get_db)) -> Si
     user.email_verified_at = now
     token.used_at = now
     db.commit()
+
+    # api/deps.py caches "role|verified" per (user, workspace) for up to 60s.
+    # Verification is a user-level fact, not scoped to one workspace, so a
+    # request against ANY workspace this user belongs to could otherwise
+    # keep reading the stale "unverified" cache entry for up to 60s after
+    # this commit -- exactly the gap that lets the UI say "verified" while
+    # the API still 403s with email_not_verified. Invalidate every
+    # membership, not just the one active when they signed up.
+    for membership in TenancyService(db).list_memberships(user.id):
+        invalidate_membership_cache(user.id, membership.workspace_id)
 
     log_audit_event("auth.email_verify.success", user_id=str(user.id))
     return SimpleStatusResponse(status="verified")

@@ -5,7 +5,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import CurrentUser, require_admin
+from app.api.deps import CurrentUser, invalidate_membership_cache, require_admin
 from app.core.audit import log_audit_event
 from app.core.config import get_settings
 from app.core.errors import NotFoundError, PermissionDeniedError
@@ -20,6 +20,7 @@ from app.models.user import User
 from app.models.workspace import WorkspaceRole
 from app.repositories.workspace_repository import WorkspaceRepository
 from app.services.invitation_service import InvitationService
+from app.services.tenancy_service import TenancyService
 
 router = APIRouter(prefix="/invitations", tags=["invitations"])
 
@@ -187,6 +188,18 @@ def accept_invitation(
 
     service.accept(invitation, user)
     db.commit()
+
+    # invitation_service.accept() may set email_verified_at on an existing,
+    # previously-unverified user (receiving the invite at that address
+    # proves ownership of it). api/deps.py caches "role|verified" per
+    # (user, workspace) for up to 60s -- if that user already belongs to
+    # other workspaces, a request against any of them could otherwise keep
+    # reading a stale "unverified" cache entry. list_memberships is read
+    # after the commit above so it also picks up the membership this call
+    # just created.
+    for membership in TenancyService(db).list_memberships(user.id):
+        invalidate_membership_cache(user.id, membership.workspace_id)
+
     log_audit_event(
         "invitation.accepted",
         user_id=str(user.id),

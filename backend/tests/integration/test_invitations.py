@@ -241,6 +241,58 @@ def test_concurrent_duplicate_invite_returns_409_not_500(db, monkeypatch):
     db.flush()
 
 
+def test_accept_invalidates_verification_cache_in_other_workspaces(client, fake_email, db):
+    """FIX 2: InvitationService.accept() can flip email_verified_at on an
+    existing, previously-unverified user. If that user already belongs to a
+    *different* workspace whose membership cache was warmed while
+    unverified, accepting the invite must invalidate that cache too -- not
+    only the workspace being joined. No sleep should be required."""
+    from app.core.security import create_access_token, hash_password
+    from app.models.user import User
+    from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
+
+    admin_token, _ = _verified_admin(client, fake_email)
+
+    suffix = uuid.uuid4().hex[:8]
+    other_workspace = Workspace(name=f"Other {suffix}", slug=f"other-{suffix}")
+    db.add(other_workspace)
+    invitee_email = f"preexisting-{suffix}@acme.com"
+    user = User(email=invitee_email, hashed_password=hash_password("x"))
+    db.add(user)
+    db.flush()
+    db.add(
+        WorkspaceMembership(
+            workspace_id=other_workspace.id, user_id=user.id, role=WorkspaceRole.member
+        )
+    )
+    db.commit()
+
+    other_token = create_access_token(user.id, other_workspace.id)
+    other_headers = {"Authorization": f"Bearer {other_token}"}
+
+    # Warm the cache as unverified in the OTHER workspace.
+    warm = client.get("/api/v1/auth/me", headers=other_headers)
+    assert warm.status_code == 200
+    assert warm.json()["email_verified"] is False
+
+    client.post(
+        "/api/v1/invitations",
+        json={"email": invitee_email, "role": "member"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    accept_resp = client.post(
+        "/api/v1/invitations/accept",
+        json={"token": _invite_token(fake_email)},
+        headers=other_headers,
+    )
+    assert accept_resp.status_code == 200
+
+    # Immediately -- no sleep -- the OTHER workspace's verification-gated
+    # endpoint must now succeed too.
+    resp = client.get("/api/v1/documents", headers=other_headers)
+    assert resp.status_code == 200
+
+
 def test_preview_is_rate_limited(client, fake_email):
     """/preview is unauthenticated and consumes a secret token, so without a
     rate limit it would let any IP brute-force invite tokens at unlimited
