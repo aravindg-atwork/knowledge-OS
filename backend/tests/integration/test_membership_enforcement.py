@@ -98,3 +98,37 @@ def test_member_can_still_sync_their_own_connector(client, db):
     )
     # 404 (no connection of their own yet), never 403.
     assert resp.status_code != 403
+
+
+def test_member_with_no_connector_gets_honest_admin_only_message(client, db):
+    """FIX 6: a member with no connector of their own used to be told to
+    "connect it first via /connectors/google/oauth/start" -- an endpoint
+    that same member gets a 403 from, since OAuth setup is admin-only. The
+    error must not send them to a dead end; it should say connector setup
+    is admin-only and to ask a workspace admin."""
+    user, workspace = _verified_user(db, role=WorkspaceRole.member)
+    invalidate_membership_cache(user.id, workspace.id)
+    token = create_access_token(user.id, workspace.id)
+    resp = client.post(
+        "/api/v1/connectors/google-drive/sync",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert "oauth/start" not in detail
+    assert "admin" in detail.lower()
+
+
+def test_admin_with_no_connector_still_gets_pointed_at_oauth_start(client, db):
+    """FIX 6: unlike a member, an admin genuinely CAN use
+    /connectors/google/oauth/start, so the original actionable message is
+    still correct and must be preserved for them."""
+    user, workspace = _verified_user(db, role=WorkspaceRole.admin)
+    invalidate_membership_cache(user.id, workspace.id)
+    token = create_access_token(user.id, workspace.id)
+    resp = client.post(
+        "/api/v1/connectors/google-drive/sync",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+    assert "oauth/start" in resp.json()["detail"]
