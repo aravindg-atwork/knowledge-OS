@@ -24,6 +24,22 @@ back bind mounts, `--reload`, and published debug ports for local iteration.)
 - Qdrant dashboard: http://localhost:6333/dashboard
 - Ollama: http://localhost:11434
 
+## Getting an account
+
+There's no seed data and no demo login -- create your own account:
+
+1. Go to http://localhost:5173/signup and sign up (this also creates your workspace).
+2. Verification emails aren't sent anywhere real in local dev; the console
+   email provider just prints the message, so grab the verification link from
+   the backend logs:
+   ```
+   docker compose logs backend | grep -A2 verify-email
+   ```
+3. Open that link (or paste the `token` query param into the verify-email
+   flow in the UI) to verify, then log in and start chatting.
+
+This needs no email credentials and no manual database access.
+
 ## Backend tests
 
 ```
