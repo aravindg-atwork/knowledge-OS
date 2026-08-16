@@ -1,4 +1,5 @@
 import uuid
+from html import escape
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
@@ -191,8 +192,17 @@ def google_oauth_callback(
 
 
 def _result_page(message: str, *, ok: bool = True) -> str:
+    """Renders a plain-text status message as a tiny standalone HTML page.
+
+    `message` may embed values this endpoint doesn't control -- notably the
+    `error` query parameter Google (or anyone crafting a link to this
+    callback) can set on the OAuth callback request. Escaping it here,
+    once, for every caller is what keeps that a plain status message
+    instead of reflected XSS on the API origin (mirrors the html.escape
+    discipline in app/email/templates.py).
+    """
     color = "#1a7f37" if ok else "#c62828"
     return (
         "<html><body style='font-family: system-ui; text-align: center; padding: 4rem;'>"
-        f"<h2 style='color: {color}'>{message}</h2></body></html>"
+        f"<h2 style='color: {color}'>{escape(message)}</h2></body></html>"
     )
