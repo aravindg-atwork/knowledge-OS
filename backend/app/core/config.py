@@ -13,7 +13,14 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "dev"
     JWT_SECRET: str = _DEV_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 60 * 24
+    # 2 hours, not 24. Access tokens are stateless and nothing revokes them:
+    # a password reset does NOT end an attacker's existing session, and that
+    # session also retains /auth/switch-workspace across every workspace the
+    # account belongs to. Session revocation is deferred to sub-project 1b
+    # (see docs/superpowers/specs/2026-08-16-tenancy-followups.md); until it
+    # lands, this expiry IS the revocation window. Raise it again only once
+    # real session invalidation exists.
+    JWT_EXPIRE_MINUTES: int = 120
     # Only send Strict-Transport-Security when the deploy is actually behind
     # TLS (see docker-compose's Caddy edge) -- sending it over plain HTTP
     # would tell browsers to force HTTPS for a host that may not serve it.

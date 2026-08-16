@@ -43,7 +43,15 @@ EXPOSE 8000
 
 USER app
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+# start-period covers a COLD start, not a warm restart: on first boot the app
+# downloads EMBEDDING_MODEL (see app/ai/embeddings/) before it serves, which
+# takes minutes on a slow link. With the old 30s grace the container was marked
+# unhealthy at ~2min, and because the frontend declares
+# `depends_on: backend: condition: service_healthy`, `docker compose up -d`
+# exited non-zero on a fresh clone and never created the frontend at all.
+# Failing probes inside start-period do not count against retries, so this is
+# grace for first boot, not a weaker check.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # --workers defaults to 2; override via UVICORN_WORKERS. No --reload here --
