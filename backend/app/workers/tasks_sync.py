@@ -1,5 +1,7 @@
 import uuid
 
+from sqlalchemy import select
+
 from app.core.errors import TransientConnectorError
 from app.db.session import SessionLocal
 from app.repositories.document_repository import DocumentRepository
@@ -40,12 +42,33 @@ def sync_connector_task(self, connector_account_id: str) -> dict:
 
 @celery_app.task(name="app.workers.tasks_sync.sync_all_connectors_task")
 def sync_all_connectors_task() -> dict:
-    """Celery beat entry point: syncs every configured connector account."""
+    """Celery beat entry point: syncs every configured connector account.
+
+    Defence in depth: TenancyService.remove_member deletes a removed
+    member's ConnectorAccount rows as the primary fix, but this task is the
+    backstop. It skips any user-owned account whose (workspace_id, user_id)
+    no longer has a membership row -- covering any other path that could
+    leave a connector account orphaned. Accounts with user_id IS NULL are
+    the shared/workspace-level accounts (e.g. the mock seed connector) and
+    have no owning membership to check, so they always sync.
+    """
     from app.models.sync_state import ConnectorAccount
+    from app.models.workspace import WorkspaceMembership
 
     db = SessionLocal()
     try:
-        account_ids = [str(a.id) for a in db.query(ConnectorAccount).all()]
+        account_ids = []
+        for account in db.scalars(select(ConnectorAccount)):
+            if account.user_id is not None:
+                membership = db.scalars(
+                    select(WorkspaceMembership).where(
+                        WorkspaceMembership.workspace_id == account.workspace_id,
+                        WorkspaceMembership.user_id == account.user_id,
+                    )
+                ).first()
+                if membership is None:
+                    continue
+            account_ids.append(str(account.id))
     finally:
         db.close()
 

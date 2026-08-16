@@ -1,11 +1,12 @@
 import re
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError
+from app.models.sync_state import ConnectorAccount
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 
@@ -157,6 +158,19 @@ class TenancyService:
                 raise ConflictError(
                     "A workspace must keep at least one admin", code="last_admin"
                 )
+        # A removed member's ConnectorAccount rows hold live Google refresh
+        # tokens. If they survive, Celery beat's sync_all_connectors_task
+        # (which has no membership check of its own -- see the defence in
+        # depth there) would keep pulling their Drive/Gmail content into
+        # this workspace's corpus forever. Delete them in the same
+        # transaction as the membership so there is no window where the
+        # membership is gone but the connector is still live.
+        self._db.execute(
+            delete(ConnectorAccount).where(
+                ConnectorAccount.workspace_id == workspace_id,
+                ConnectorAccount.user_id == user_id,
+            )
+        )
         self._db.delete(membership)
         self._db.flush()
 
