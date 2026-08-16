@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Outlet, useNavigate, NavLink } from 'react-router-dom'
 import { MessageSquare, FileText, Moon, Sun, LogOut, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher'
 import { useAuth } from './AuthContext'
 
 function useDarkMode() {
@@ -36,7 +37,12 @@ export function AppShell() {
     <div className="flex h-screen">
       <aside className="flex w-56 flex-col justify-between border-r border-border p-4">
         <div>
-          <p className="mb-6 px-1 text-sm font-semibold">Knowledge Hub</p>
+          <p className="mb-1 px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Knowledge Hub
+          </p>
+          <div className="mb-6">
+            <WorkspaceSwitcher />
+          </div>
           <nav className="space-y-1">
             <NavLink to="/chat" className={navItemClass}>
               <MessageSquare size={16} /> Chat
