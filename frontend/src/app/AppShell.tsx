@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useNavigate, NavLink } from 'react-router-dom'
-import { MessageSquare, FileText, Moon, Sun, LogOut } from 'lucide-react'
+import { MessageSquare, FileText, Moon, Sun, LogOut, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from './AuthContext'
 
@@ -19,7 +19,7 @@ function useDarkMode() {
 export function AppShell() {
   const { isDark, toggle } = useDarkMode()
   const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { me, logout } = useAuth()
 
   function handleLogout() {
     logout()
@@ -44,6 +44,11 @@ export function AppShell() {
             <NavLink to="/documents" className={navItemClass}>
               <FileText size={16} /> Documents
             </NavLink>
+            {me?.role === 'admin' && (
+              <NavLink to="/settings/workspace" className={navItemClass}>
+                <Settings size={16} /> Settings
+              </NavLink>
+            )}
           </nav>
         </div>
         <div className="space-y-1">

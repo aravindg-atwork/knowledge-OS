@@ -7,7 +7,9 @@ import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage'
 import { AcceptInvitePage } from '@/features/invites/AcceptInvitePage'
 import { ChatPage } from '@/features/chat/ChatPage'
 import { DocumentListPage } from '@/features/documents/DocumentListPage'
-import { RequireVerified } from './guards'
+import { WorkspaceSettingsPage } from '@/features/settings/WorkspaceSettingsPage'
+import { MembersPage } from '@/features/settings/MembersPage'
+import { RequireVerified, RequireAdmin } from './guards'
 import { AppShell } from './AppShell'
 
 export function AppRoutes() {
@@ -30,6 +32,22 @@ export function AppRoutes() {
         <Route index element={<Navigate to="/chat" replace />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="documents" element={<DocumentListPage />} />
+        <Route
+          path="settings/workspace"
+          element={
+            <RequireAdmin>
+              <WorkspaceSettingsPage />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="settings/members"
+          element={
+            <RequireAdmin>
+              <MembersPage />
+            </RequireAdmin>
+          }
+        />
       </Route>
     </Routes>
   )
