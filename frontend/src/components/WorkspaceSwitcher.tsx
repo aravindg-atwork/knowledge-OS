@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { ChevronDown, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ApiError } from '@/lib/apiClient'
+import { Dialog } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 import { useAuth } from '@/app/AuthContext'
 import { createWorkspace } from '@/features/workspaces/api/workspacesApi'
 
@@ -10,9 +13,14 @@ export function WorkspaceSwitcher() {
   const { me, switchWorkspace } = useAuth()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [switchError, setSwitchError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  const [createOpen, setCreateOpen] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -35,7 +43,7 @@ export function WorkspaceSwitcher() {
       return
     }
     setBusy(true)
-    setError(null)
+    setSwitchError(null)
     try {
       await switchWorkspace(workspaceId)
       setOpen(false)
@@ -43,76 +51,114 @@ export function WorkspaceSwitcher() {
       // keep showing state scoped to the previous tenant.
       navigate('/chat')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Unable to switch workspace')
+      setSwitchError(err instanceof ApiError ? err.message : 'Unable to switch workspace')
     } finally {
       setBusy(false)
     }
   }
 
-  async function handleCreate() {
-    const name = window.prompt('Workspace name')
-    if (!name) return
-    setBusy(true)
-    setError(null)
+  function openCreateDialog() {
+    setOpen(false)
+    setNewName('')
+    setCreateError(null)
+    setCreateOpen(true)
+  }
+
+  function closeCreateDialog() {
+    setCreateOpen(false)
+    setNewName('')
+    setCreateError(null)
+  }
+
+  async function handleCreateSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    setCreating(true)
+    setCreateError(null)
     try {
-      const workspace = await createWorkspace(name)
+      const workspace = await createWorkspace(newName)
       await switchWorkspace(workspace.id)
-      setOpen(false)
+      // Closing only on success keeps the dialog open (with the error
+      // shown inline) whenever the backend rejects the name, so the user
+      // can correct it without losing their place.
+      setCreateOpen(false)
+      setNewName('')
       navigate('/chat')
     } catch (err) {
       if (err instanceof ApiError && err.code === 'invalid_workspace_name') {
-        setError(err.message)
+        setCreateError(err.message)
       } else {
-        setError(err instanceof ApiError ? err.message : 'Unable to create workspace')
+        setCreateError(err instanceof ApiError ? err.message : 'Unable to create workspace')
       }
     } finally {
-      setBusy(false)
+      setCreating(false)
     }
   }
 
-  if (me.workspaces.length === 1) {
-    return <p className="px-1 text-sm font-semibold">{activeWorkspace?.name}</p>
-  }
-
   return (
-    <div className="relative" ref={containerRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-1 text-sm font-semibold hover:bg-muted"
-      >
-        <span className="truncate">{activeWorkspace?.name}</span>
-        <ChevronDown size={14} className="shrink-0 text-muted-foreground" />
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full z-10 mt-1 w-56 rounded-md border border-border bg-card p-1 text-card-foreground shadow-lg">
-          {me.workspaces.map((workspace) => (
+    <>
+      <div className="relative" ref={containerRef}>
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-1 text-sm font-semibold hover:bg-muted"
+        >
+          <span className="truncate">{activeWorkspace?.name}</span>
+          <ChevronDown size={14} className="shrink-0 text-muted-foreground" />
+        </button>
+        {open && (
+          <div className="absolute left-0 top-full z-10 mt-1 w-56 rounded-md border border-border bg-card p-1 text-card-foreground shadow-lg">
+            {me.workspaces.map((workspace) => (
+              <button
+                key={workspace.id}
+                type="button"
+                disabled={busy}
+                onClick={() => void handleSwitch(workspace.id)}
+                className={cn(
+                  'flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50',
+                  workspace.id === me.active_workspace_id && 'bg-muted',
+                )}
+              >
+                <span className="truncate">{workspace.name}</span>
+                <span className="text-xs text-muted-foreground">{workspace.role}</span>
+              </button>
+            ))}
+            <div className="my-1 border-t border-border" />
             <button
-              key={workspace.id}
               type="button"
               disabled={busy}
-              onClick={() => void handleSwitch(workspace.id)}
-              className={cn(
-                'flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50',
-                workspace.id === me.active_workspace_id && 'bg-muted',
-              )}
+              onClick={openCreateDialog}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
             >
-              <span className="truncate">{workspace.name}</span>
-              <span className="text-xs text-muted-foreground">{workspace.role}</span>
+              <Plus size={14} /> Create workspace
             </button>
-          ))}
-          <div className="my-1 border-t border-border" />
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void handleCreate()}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
-          >
-            <Plus size={14} /> Create workspace
-          </button>
-          {error && <p className="px-2 pt-1 text-xs text-red-500">{error}</p>}
-        </div>
-      )}
-    </div>
+            {switchError && <p className="px-2 pt-1 text-xs text-red-500">{switchError}</p>}
+          </div>
+        )}
+      </div>
+
+      <Dialog open={createOpen} onClose={closeCreateDialog} title="Create workspace">
+        <form onSubmit={(e) => void handleCreateSubmit(e)} className="space-y-3">
+          <div>
+            <Input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Workspace name"
+              autoFocus
+              required
+            />
+            {createError && <p className="mt-1 text-sm text-red-500">{createError}</p>}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={closeCreateDialog} disabled={creating}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={creating}>
+              {creating ? 'Creating...' : 'Create'}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+    </>
   )
 }
