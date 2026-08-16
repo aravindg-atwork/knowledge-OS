@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, Header, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, invalidate_membership_cache, require_admin
@@ -10,7 +11,12 @@ from app.core.audit import log_audit_event
 from app.core.config import get_settings
 from app.core.errors import NotFoundError, PermissionDeniedError
 from app.core.rate_limit import limiter
-from app.core.security import create_access_token, decode_access_token, hash_password
+from app.core.security import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
 from app.db.session import get_db
 from app.email.factory import get_email_provider
 from app.email.provider import EmailProvider
@@ -189,13 +195,44 @@ def accept_invitation(
             raise PermissionDeniedError(
                 "A password is required to create your account", code="password_required"
             )
-        user = User(
+        # The pre-check above is not atomic with this insert: two
+        # concurrent accept calls for the same first-time invitee (e.g. a
+        # double-clicked Accept button) can both see no account and race to
+        # create one. users.email carries a DB-level unique constraint, so
+        # the loser fails here instead -- caught via a SAVEPOINT (mirroring
+        # TenancyService.create_workspace's slug race and auth.signup's
+        # email race) so only this insert rolls back, not any unrelated
+        # work already pending on `db`.
+        #
+        # Recovery must not just silently mint a token for whichever
+        # account now exists: that would let a *different*, unauthenticated
+        # caller racing this exact request piggyback into someone else's
+        # account. Only continue if the password this request submitted
+        # actually authenticates the account the race left behind -- i.e.
+        # this really was the same person's duplicate submission. Otherwise
+        # refuse exactly like the ordinary existing-account-without-a-
+        # session case below.
+        new_user = User(
             email=invitation.email,
             hashed_password=hash_password(payload.password),
             full_name=payload.full_name,
         )
-        db.add(user)
-        db.flush()
+        savepoint = db.begin_nested()
+        db.add(new_user)
+        try:
+            db.flush()
+        except IntegrityError:
+            savepoint.rollback()
+            user = WorkspaceRepository(db).get_user_by_email(invitation.email)
+            if user is None or not verify_password(payload.password, user.hashed_password):
+                raise PermissionDeniedError(
+                    "An account with that email already exists. Sign in, then open this "
+                    "invitation link again to join the workspace.",
+                    code="login_required",
+                ) from None
+        else:
+            savepoint.commit()
+            user = new_user
     elif not has_matching_session:
         raise PermissionDeniedError(
             "An account with that email already exists. Sign in, then open this "

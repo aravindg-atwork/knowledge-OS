@@ -241,6 +241,143 @@ def test_concurrent_duplicate_invite_returns_409_not_500(db, monkeypatch):
     db.flush()
 
 
+def test_double_accept_membership_race_is_idempotent_not_500(db):
+    """FIX 5: simulates a double-clicked Accept button -- two concurrent
+    calls to InvitationService.accept() for the same invitation and user.
+    Both would pass find_valid's accepted_at IS NULL check in a real race;
+    here the first call's membership INSERT has already landed by the time
+    the second one runs, colliding on uq_workspace_user. That must not
+    raise an unhandled IntegrityError -- it should return the same
+    membership the first call created."""
+    from app.models.user import User
+    from app.models.workspace import Workspace, WorkspaceRole
+    from app.services.invitation_service import InvitationService
+
+    suffix = uuid.uuid4().hex[:8]
+    workspace = Workspace(name=f"Race Accept Co {suffix}", slug=f"race-accept-{suffix}")
+    db.add(workspace)
+    admin = User(email=f"admin-{suffix}@race.local", hashed_password="x")
+    invitee = User(email=f"invitee-{suffix}@race.local", hashed_password="x")
+    db.add(admin)
+    db.add(invitee)
+    db.flush()
+
+    service = InvitationService(db)
+    invitation, _raw = service.create(workspace.id, invitee.email, WorkspaceRole.member, admin.id)
+    db.flush()
+
+    first_membership = service.accept(invitation, invitee)
+    db.flush()
+
+    second_membership = service.accept(invitation, invitee)
+    db.flush()
+
+    assert second_membership.id == first_membership.id
+
+    # The failed attempt's SAVEPOINT rollback must not have poisoned the
+    # surrounding transaction.
+    db.flush()
+
+
+def test_accept_new_account_race_recovers_when_password_matches(client, fake_email, monkeypatch, db):
+    """FIX 5: simulates the race between get_user_by_email's pre-check and
+    the User INSERT that follows it for a first-time invitee (e.g. a
+    double-clicked Accept button submitting the same password both times):
+    another request has already created the account with the same
+    submitted password by the time this call's pre-check ran (forced here
+    by monkeypatching the pre-check to always report "no user", as if it
+    had raced and lost). users.email's unique constraint must not surface
+    as an unhandled 500 -- and since the password matches the account that
+    now exists, this must be treated as the same person's duplicate
+    submission and succeed."""
+    from app.core.security import hash_password
+    from app.models.user import User as UserModel
+    from app.repositories.workspace_repository import WorkspaceRepository
+
+    admin_token, _ = _verified_admin(client, fake_email)
+    invitee_email = f"race-new-{uuid.uuid4().hex[:8]}@acme.com"
+    client.post(
+        "/api/v1/invitations",
+        json={"email": invitee_email, "role": "member"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    raw = _invite_token(fake_email)
+
+    # The account that "won" the race, already present with the same
+    # password this request is about to submit.
+    winner = UserModel(email=invitee_email, hashed_password=hash_password("shared-password"))
+    db.add(winner)
+    db.commit()
+
+    # Only the pre-check (the first call) must miss, as if it had raced and
+    # lost -- the post-collision recovery lookup inside the endpoint must
+    # see the real row, exactly as it would in a genuine race.
+    real_get_user_by_email = WorkspaceRepository.get_user_by_email
+    calls = {"n": 0}
+
+    def fake_get_user_by_email(self, email):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_get_user_by_email(self, email)
+
+    monkeypatch.setattr(WorkspaceRepository, "get_user_by_email", fake_get_user_by_email)
+
+    resp = client.post(
+        "/api/v1/invitations/accept",
+        json={"token": raw, "password": "shared-password", "full_name": "Race"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["access_token"]
+    assert calls["n"] >= 2
+
+
+def test_accept_new_account_race_refuses_when_password_does_not_match(
+    client, fake_email, monkeypatch, db
+):
+    """FIX 5: same race as above, but the submitted password does not match
+    the account that already exists -- recovery must not silently grant
+    access to someone else's account. It should behave like the ordinary
+    existing-account-without-a-session case (login_required), not a 500 and
+    not a token."""
+    from app.core.security import hash_password
+    from app.models.user import User as UserModel
+    from app.repositories.workspace_repository import WorkspaceRepository
+
+    admin_token, _ = _verified_admin(client, fake_email)
+    invitee_email = f"race-new-{uuid.uuid4().hex[:8]}@acme.com"
+    client.post(
+        "/api/v1/invitations",
+        json={"email": invitee_email, "role": "member"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    raw = _invite_token(fake_email)
+
+    winner = UserModel(email=invitee_email, hashed_password=hash_password("their-real-password"))
+    db.add(winner)
+    db.commit()
+
+    real_get_user_by_email = WorkspaceRepository.get_user_by_email
+    calls = {"n": 0}
+
+    def fake_get_user_by_email(self, email):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_get_user_by_email(self, email)
+
+    monkeypatch.setattr(WorkspaceRepository, "get_user_by_email", fake_get_user_by_email)
+
+    resp = client.post(
+        "/api/v1/invitations/accept",
+        json={"token": raw, "password": "attacker-guess"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "login_required"
+    assert "access_token" not in resp.json()
+    assert calls["n"] >= 2
+
+
 def test_accept_for_existing_account_without_session_requires_login(client, fake_email):
     """FIX 3: an invite link must never be a password-free login into an
     existing account. If the invited address already has an account and the

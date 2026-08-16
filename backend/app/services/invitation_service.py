@@ -110,11 +110,47 @@ class InvitationService:
         return invitation
 
     def accept(self, invitation: Invitation, user: User) -> WorkspaceMembership:
+        """find_valid's accepted_at IS NULL check is not atomic with this
+        method's membership INSERT: two concurrent accept() calls for the
+        same invitation (e.g. a double-clicked Accept button firing two
+        requests) can both pass find_valid and both attempt to insert the
+        same (workspace_id, user_id) membership row. `uq_workspace_user`
+        is the real guard; the loser is caught here via a SAVEPOINT
+        (mirroring the discipline in TenancyService.create_workspace and
+        auth.signup) so only this insert rolls back, never the surrounding
+        transaction. Rather than surfacing that as an unhandled 500 or even
+        a ConflictError, the loser just looks up and returns the membership
+        the winner already created -- since both callers are `user`
+        legitimately joining `invitation.workspace_id`, this is the
+        correct, idempotent outcome for a double-click, not a real
+        conflict.
+        """
         now = datetime.now(UTC)
+        savepoint = self._db.begin_nested()
         membership = WorkspaceMembership(
             workspace_id=invitation.workspace_id, user_id=user.id, role=invitation.role
         )
         self._db.add(membership)
+        try:
+            self._db.flush()
+        except IntegrityError:
+            savepoint.rollback()
+            existing = self._db.scalars(
+                select(WorkspaceMembership).where(
+                    WorkspaceMembership.workspace_id == invitation.workspace_id,
+                    WorkspaceMembership.user_id == user.id,
+                )
+            ).first()
+            if existing is None:
+                # The constraint fired for some other reason -- don't
+                # silently swallow that as a false idempotent success.
+                raise ConflictError(
+                    "Could not accept this invitation", code="invite_accept_conflict"
+                ) from None
+            membership = existing
+        else:
+            savepoint.commit()
+
         invitation.accepted_at = now
         # Receiving the invite at this address proves ownership of it -- an
         # invited teammate must never face a separate verification step.
