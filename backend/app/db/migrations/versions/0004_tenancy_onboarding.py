@@ -22,6 +22,17 @@ def upgrade() -> None:
     op.add_column(
         "users", sa.Column("email_verified_at", sa.DateTime(timezone=True), nullable=True)
     )
+    # Backfill existing rows. email_verified_at is nullable and new signups
+    # start out NULL (unverified) on purpose -- but every user who predates
+    # this migration was created before email verification existed at all.
+    # Leaving their column NULL would retroactively brand them "unverified"
+    # and get_current_user (app/api/deps.py) would start raising
+    # EmailNotVerifiedError on documents/chat/connectors for every one of
+    # them the moment this migration runs, with no way for them to
+    # self-serve a fix (they have no pending verification email). Stamping
+    # now() treats "already had an account before verification was a
+    # concept" as equivalent to "verified".
+    op.execute("UPDATE users SET email_verified_at = now() WHERE email_verified_at IS NULL")
 
     auth_token_purpose = postgresql.ENUM(
         "verify_email", "password_reset", name="auth_token_purpose"
