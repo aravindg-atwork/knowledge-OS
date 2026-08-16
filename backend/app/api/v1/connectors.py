@@ -16,6 +16,7 @@ from app.db.session import get_db
 from app.models.sync_state import ConnectorAccount, ConnectorMode, ConnectorType
 from app.models.user import User
 from app.models.workspace import WorkspaceRole
+from app.repositories.workspace_repository import WorkspaceRepository
 from app.workers.tasks_sync import sync_connector_task
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
@@ -151,6 +152,21 @@ def google_oauth_callback(
     workspace_id = uuid.UUID(claims["workspace_id"])
     user_id = uuid.UUID(claims["user_id"])
 
+    # The state token stays valid for 10 minutes (see create_oauth_state_token),
+    # so membership can be revoked between /oauth/start and this callback.
+    # Re-check it before exchanging the code: otherwise a member removed
+    # mid-consent gets a live refresh token stored against the workspace they
+    # just left, plus one immediate ingest into it. This is a DB lookup on the
+    # identity the signed state already names -- the endpoint stays
+    # unauthenticated by design, since Google redirects a browser here with no
+    # Authorization header.
+    if WorkspaceRepository(db).get_membership(workspace_id, user_id) is None:
+        return _result_page(
+            "You're no longer a member of that workspace, so this connection "
+            "wasn't completed.",
+            ok=False,
+        )
+
     try:
         credentials = google_oauth.exchange_code(
             client_id=settings.GOOGLE_OAUTH_CLIENT_ID,
@@ -186,6 +202,11 @@ def google_oauth_callback(
         db.add(account)
     account.mode = ConnectorMode.real
     account.credential_ref = {"refresh_token": credentials.refresh_token}
+    # A membership-checked reconnect is exactly the event that should re-enable
+    # a row soft-disabled by remove_member. Without this, someone removed and
+    # later re-invited reconnects successfully, gets one sync, and then has a
+    # silently dead connector -- while we hold a live refresh token for it.
+    account.disabled_at = None
     db.commit()
     db.refresh(account)
 

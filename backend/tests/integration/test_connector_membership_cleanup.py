@@ -348,3 +348,112 @@ def test_manual_sync_refuses_a_disabled_connector_account(client, fake_email, db
     resp = client.post("/api/v1/connectors/google-drive/sync", headers=headers)
 
     assert resp.status_code == 404
+
+
+# --- FIX 9: the OAuth callback was the last path a removed member's
+# connector could still be revived or ingest through. -------------------
+
+
+def test_sync_connector_task_is_a_noop_for_a_disabled_account(db, monkeypatch):
+    """Worker-level backstop: even if some caller queues a disabled account
+    directly, ingestion must not run."""
+    from app.workers import tasks_sync
+
+    workspace, admin, member = _workspace_with_admin_and_member(db)
+    account = ConnectorAccount(
+        workspace_id=workspace.id,
+        connector_type=ConnectorType.google_drive,
+        user_id=member.id,
+        mode=ConnectorMode.real,
+        display_name="Disabled (member)",
+        credential_ref={},
+        disabled_at=utcnow(),
+    )
+    db.add(account)
+    db.commit()
+
+    ran = {"called": False}
+
+    def _boom(*args, **kwargs):
+        ran["called"] = True
+        raise AssertionError("run_sync must not be called for a disabled account")
+
+    monkeypatch.setattr(tasks_sync.SyncService, "run_sync", _boom)
+
+    result = tasks_sync.sync_connector_task(str(account.id))
+    assert ran["called"] is False
+    assert "skipped" in result
+
+
+def test_sync_connector_task_is_a_noop_when_owner_lost_membership(db, monkeypatch):
+    """Defence in depth for an account orphaned by any path other than
+    remove_member (which soft-disables explicitly)."""
+    from app.workers import tasks_sync
+
+    workspace, admin, member = _workspace_with_admin_and_member(db)
+    account = ConnectorAccount(
+        workspace_id=workspace.id,
+        connector_type=ConnectorType.google_drive,
+        user_id=member.id,
+        mode=ConnectorMode.real,
+        display_name="Orphaned (member)",
+        credential_ref={"refresh_token": "still-here"},
+    )
+    db.add(account)
+    db.flush()
+
+    membership = db.scalars(
+        select(WorkspaceMembership).where(
+            WorkspaceMembership.workspace_id == workspace.id,
+            WorkspaceMembership.user_id == member.id,
+        )
+    ).first()
+    db.delete(membership)
+    db.commit()
+
+    monkeypatch.setattr(
+        tasks_sync.SyncService,
+        "run_sync",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("run_sync must not run for a non-member's account")
+        ),
+    )
+
+    result = tasks_sync.sync_connector_task(str(account.id))
+    assert "skipped" in result
+
+
+def test_sync_connector_task_still_runs_for_a_shared_account_with_no_user(db, monkeypatch):
+    """Guard against re-breaking the earlier fix: workspace-level shared
+    accounts (user_id IS NULL) have no owning membership and must still sync."""
+    from app.workers import tasks_sync
+
+    workspace, admin, member = _workspace_with_admin_and_member(db)
+    shared = ConnectorAccount(
+        workspace_id=workspace.id,
+        connector_type=ConnectorType.google_drive,
+        user_id=None,
+        mode=ConnectorMode.mock,
+        display_name="Shared (workspace)",
+        credential_ref={},
+    )
+    db.add(shared)
+    db.commit()
+
+    calls = {"n": 0}
+
+    class _EmptyChangeSet:
+        # sync_connector_task reads .changed and .deleted_ids -- a stub missing
+        # either raises inside a task with autoretry_for, which then retries
+        # with backoff and hangs rather than failing fast.
+        changed: list = []
+        deleted_ids: list = []
+
+    def _run_sync(self, account_id):
+        calls["n"] += 1
+        return _EmptyChangeSet()
+
+    monkeypatch.setattr(tasks_sync.SyncService, "run_sync", _run_sync)
+
+    tasks_sync.sync_connector_task(str(shared.id))
+    assert calls["n"] == 1, "shared workspace-level account must still sync"
