@@ -3360,9 +3360,9 @@ git commit -m "feat: add workspace and member settings pages"
 
 Render the active workspace name as a dropdown listing `me.workspaces`. Selecting one calls `switchWorkspace(id)`, which mints a new token and re-fetches `/auth/me`. Then `navigate('/chat')` — staying on a document page would show a document from the previous tenant.
 
-If `me.workspaces.length === 1`, render the name as plain text with no dropdown.
+Always render the dropdown, even with a single workspace. An earlier draft rendered plain text in that case, which combined with putting "Create workspace" inside the dropdown to make workspace creation unreachable for exactly the users who have not yet created a second one — defeating goal #4 through a cosmetic rule.
 
-Add a "Create workspace" item at the bottom that prompts for a name and calls `POST /api/v1/workspaces`, then switches into it.
+Add a "Create workspace" item that opens a dialog (reuse `components/ui/dialog.tsx`; `DocumentViewerModal.tsx` shows the pattern) with a name field, calls `POST /api/v1/workspaces`, then switches into the new workspace. On 409 `invalid_workspace_name`, show the error inline against the field and keep the dialog open. Do not use `window.prompt` — it cannot display validation errors and cannot be driven by browser automation, so the path would be permanently unverifiable.
 
 - [ ] **Step 2: Mount it in the shell**
 
